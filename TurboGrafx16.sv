@@ -143,6 +143,7 @@ parameter CONF_STR1 = {
 	"TGFX16;;",
 	"FS13,PCEBIN,Load TurboGrafx;",
 	"FS13,SGX,Load SuperGrafx;",
+	"S0,ISO,Mount ISO CD Image;",
 	"-;"
 };
 parameter CONF_STR2 = {
@@ -201,14 +202,20 @@ wire [15:0] ioctl_dout;
 reg         ioctl_wait;
 wire        forced_scandoubler;
 
-reg  [31:0] sd_lba;
-reg         sd_rd = 0;
-reg         sd_wr = 0;
+//reg  [31:0] sd_lba;
+//reg         sd_rd = 0;
+//reg         sd_wr = 0;
+
+wire  [31:0] sd_lba = iso_sd_lba;
+wire         sd_rd = iso_sd_rd;
+wire         sd_wr = 0;
+
 wire        sd_ack;
 wire  [7:0] sd_buff_addr;
 wire [15:0] sd_buff_dout;
 wire [15:0] sd_buff_din;
 wire        sd_buff_wr;
+wire [15:0] sd_req_type;
 wire        img_mounted;
 wire        img_readonly;
 wire [63:0] img_size;
@@ -241,6 +248,8 @@ hps_io #(.STRLEN(($size(CONF_STR1)>>3) + ($size(CONF_STR2)>>3) + ($size(CONF_STR
 	.sd_buff_dout(sd_buff_dout),
 	.sd_buff_din(sd_buff_din),
 	.sd_buff_wr(sd_buff_wr),
+	.sd_req_type(sd_req_type),
+	
 	.img_mounted(img_mounted),
 	.img_readonly(img_readonly),
 	.img_size(img_size),
@@ -253,8 +262,14 @@ hps_io #(.STRLEN(($size(CONF_STR1)>>3) + ($size(CONF_STR2)>>3) + ($size(CONF_STR
 );
 
 wire [23:0] audio_l, audio_r;
-assign AUDIO_L = audio_l[23:8];
-assign AUDIO_R = audio_r[23:8];
+
+//assign AUDIO_L = audio_l[23:8];
+//assign AUDIO_R = audio_r[23:8];
+
+assign AUDIO_L = cd_audio_l;
+assign AUDIO_R = cd_audio_r;
+
+
 assign AUDIO_S = 1;
 assign AUDIO_MIX = 0;
 
@@ -306,7 +321,91 @@ pce_top #(MAX_SPPL) pce_top
 	.VIDEO_VS(vs),
 	.VIDEO_HS(hs),
 	.VIDEO_HBL(hbl),
-	.VIDEO_VBL(vbl)
+	.VIDEO_VBL(vbl),
+	
+	.CLKEN_OUT( CLKEN_OUT ),
+	
+	.CDR_CS( CDR_CS ),
+	
+	.CDR_DI( CDR_DI ),
+	
+	.IRQ2_N( IRQ2_N ),
+	
+	.CPU_DATA_OUT( CPU_DO ),
+	
+	.RD_N( CPU_RD_N ),
+	.WR_N( CPU_WR_N ),
+	
+	.CPU_ADDR( CPU_ADDR )
+);
+
+
+// PCE / tg16 CD stuff... (ElectronAsh / dentnz).
+//
+(*keep*) wire CLKEN_OUT;
+
+(*keep*) wire CPU_RD_N;
+(*keep*) wire CPU_WR_N;
+
+(*keep*) wire [20:0] CPU_ADDR;
+(*keep*) wire [7:0] CPU_DO;
+
+(*keep*) wire CDR_CS;
+//(*keep*) wire CDR_RD_N;
+//(*keep*) wire CDR_WR_N;
+
+
+(*keep*) wire [7:0] CDR_DO;
+(*keep*) wire [7:0] CDR_DI = CDR_DO;	// CDR_DI goes to the PCE core. CDR_DO comes from pcecd_top.
+
+wire [31:0] iso_sd_lba;
+wire        iso_sd_rd;
+wire        iso_sd_wr;
+
+wire [15:0] cd_audio_l;
+wire [15:0] cd_audio_r;
+
+
+wire IRQ2_ASSERT;
+wire IRQ2_N = !IRQ2_ASSERT;
+
+
+pcecd_top pcecd_top_inst
+(
+	.RESET( reset|ioctl_download ) ,	// input  RESET
+	.CLOCK( clk_sys ) ,			// input  CLOCK
+	
+	.CS_N( !CDR_CS ) ,			// input  CS_N
+	
+	.RD_N( !(CLKEN_OUT && !CPU_RD_N) ) ,	// input  RD_N
+	.WR_N( !(CLKEN_OUT && !CPU_WR_N) ) ,	// input  WR_N
+	
+	.ADDR( CPU_ADDR ) ,			// input [20:0] ADDR
+	
+	.DIN( CPU_DO ) ,				// input [7:0] DIN
+	.DOUT( CDR_DO ) ,				// output [7:0] DOUT
+	
+	.IRQ2_ASSERT( IRQ2_ASSERT ), // output  IRQ2_ASSERT
+	
+	.sd_lba( iso_sd_lba ),
+	.sd_rd( iso_sd_rd ),
+	//.sd_wr( iso_sd_wr ),
+	
+	.sd_ack( sd_ack ),
+	
+	//.sd_buff_addr( sd_buff_addr ),	// 256 WORDS! (NOT USING THIS NOW! Checking sd_ack to know when all bytes have trasnferred from the HPS).
+	
+	.sd_buff_din( sd_buff_dout ),		// "sd_buff_dout" is FROM the HPS!
+	.sd_buff_wr( sd_buff_wr ),
+	
+	.sd_req_type( sd_req_type ),
+	
+	.img_mounted( img_mounted ),
+	.img_readonly( img_readonly ),
+	.img_size( img_size ),
+	
+	.cd_audio_l( cd_audio_l ),
+	.cd_audio_r( cd_audio_r )
 );
 
 wire [2:0] r,g,b;
@@ -474,9 +573,9 @@ dpram #(12) backram_l
 	.wren_a(bram_wr & ~bram_addr[0]),
 	.q_a(bram_ql),
 
-   .address_b(defbram[3] ? {sd_lba[3:0],sd_buff_addr} : {12'h00,defbram[2:1]}),
-	.data_b(defbram[3] ? sd_buff_dout[7:0] : defval[defbram[2:1]][7:0]),
-	.wren_b(defbram[3] ? sd_buff_wr & sd_ack : defbram[0] & ~defbram[3]),
+   //.address_b(defbram[3] ? {sd_lba[3:0],sd_buff_addr} : {12'h00,defbram[2:1]}),
+	//.data_b(defbram[3] ? sd_buff_dout[7:0] : defval[defbram[2:1]][7:0]),
+	//.wren_b(defbram[3] ? sd_buff_wr & sd_ack : defbram[0] & ~defbram[3]),
 	.q_b(sd_buff_din[7:0])
 );
 
@@ -489,9 +588,9 @@ dpram #(12) backram_h
 	.wren_a(bram_wr & bram_addr[0]),
 	.q_a(bram_qh),
 
-   .address_b(defbram[3] ? {sd_lba[3:0],sd_buff_addr} : {12'h00,defbram[2:1]}),
-	.data_b(defbram[3] ? sd_buff_dout[15:8] : defval[defbram[2:1]][15:8]),
-	.wren_b(defbram[3] ? sd_buff_wr & sd_ack : defbram[0] & ~defbram[3]),
+   //.address_b(defbram[3] ? {sd_lba[3:0],sd_buff_addr} : {12'h00,defbram[2:1]}),
+	//.data_b(defbram[3] ? sd_buff_dout[15:8] : defval[defbram[2:1]][15:8]),
+	//.wren_b(defbram[3] ? sd_buff_wr & sd_ack : defbram[0] & ~defbram[3]),
 	.q_b(sd_buff_din[15:8])
 );
 
@@ -521,9 +620,9 @@ always @(posedge clk_sys) begin
 	old_load <= bk_load;
 	old_save <= bk_save;
 	old_ack  <= sd_ack;
-	
+/*	
 	if(~old_ack & sd_ack) {sd_rd, sd_wr} <= 0;
-	
+
 	if(!bk_state) begin
 		if(bk_ena & ((~old_load & bk_load) | (~old_save & bk_save))) begin
 			bk_state <= 1;
@@ -551,7 +650,7 @@ always @(posedge clk_sys) begin
 			end
 		end
 	end
-	
+*/
 	old_format <= format;
 	if(~old_format && format) begin
 		defbram <= 0;

@@ -82,6 +82,7 @@ module hps_io #(parameter STRLEN=0, PS2DIV=2000, WIDE=0, VDNUM=1, PS2WE=0)
 	output reg [DW:0] sd_buff_dout,
 	input      [DW:0] sd_buff_din,
 	output reg        sd_buff_wr,
+	input 	  [15:0]  sd_req_type,			// Added for CD ISO / TOC handling etc. ElectronAsh.
 
 	// ARM -> FPGA download
 	output reg        ioctl_download = 0, // signal indicating an active download
@@ -368,6 +369,7 @@ always@(posedge clk_sys) begin
 								1: io_dout <= sd_cmd;
 								2: io_dout <= sd_lba[15:0];
 								3: io_dout <= sd_lba[31:16];
+								4: io_dout <= sd_req_type;
 							endcase
 
 					// send SD config IO -> FPGA

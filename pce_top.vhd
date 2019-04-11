@@ -35,8 +35,8 @@ entity pce_top is
 		SGX			: in  std_logic;
 		TURBOTAP    : in  std_logic;
 		SIXBUTTON   : in  std_logic;
-		JOY1 		   : in  std_logic_vector(11 downto 0);
-		JOY2 		   : in  std_logic_vector(11 downto 0);
+		JOY1 		   : in  std_logic_vector(15 downto 0);
+		JOY2 		   : in  std_logic_vector(15 downto 0);
 		JOY3 		   : in  std_logic_vector(11 downto 0);
 		JOY4 		   : in  std_logic_vector(11 downto 0);
 		JOY5 		   : in  std_logic_vector(11 downto 0);
@@ -51,11 +51,37 @@ entity pce_top is
 		VIDEO_VS		: out std_logic;
 		VIDEO_HS		: out std_logic;
 		VIDEO_HBL	: out std_logic;
-		VIDEO_VBL	: out std_logic
+		VIDEO_VBL	: out std_logic;
+		
+		CLKEN_OUT 	: out std_logic;
+		
+		CDR_CS		: out std_logic;
+		CDR_DI		: in std_logic_vector(7 downto 0);
+		IRQ2_N 		: in std_logic;
+		
+		CPU_DATA_OUT: out std_logic_vector(7 downto 0);
+		
+		RD_N			: out std_logic;
+		WR_N			: out std_logic;
+		
+		CPU_ADDR		: out std_logic_vector(20 downto 0)
 	);
 end pce_top;
 
+
 architecture rtl of pce_top is
+
+component main_ram
+	PORT
+	(
+		address		: IN STD_LOGIC_VECTOR (14 DOWNTO 0);
+		clock		: IN STD_LOGIC  := '1';
+		data		: IN STD_LOGIC_VECTOR (7 DOWNTO 0);
+		wren		: IN STD_LOGIC ;
+		q		: OUT STD_LOGIC_VECTOR (7 DOWNTO 0)
+	);
+end component;
+
 
 signal RESET_N			: std_logic := '0';
 
@@ -66,6 +92,7 @@ signal CPU_DI			: std_logic_vector(7 downto 0);
 signal CPU_DO			: std_logic_vector(7 downto 0);
 signal CPU_A			: std_logic_vector(20 downto 0);
 signal CPU_CLKEN		: std_logic;
+signal CPU_ROM_SEL_N	: std_logic;
 signal CPU_VCE_SEL_N	: std_logic;
 signal CPU_VDC_SEL_N	: std_logic;
 signal CPU_RAM_SEL_N	: std_logic;
@@ -83,6 +110,9 @@ signal RAM_A			: std_logic_vector(14 downto 0);
 
 signal PRAM_DO			: std_logic_vector(7 downto 0);
 signal CPU_PRAM_SEL_N: std_logic;
+
+signal SUP_DO     : std_logic_vector(7 downto 0);
+signal CD_DO     : std_logic_vector(7 downto 0);
 
 -- VCE signals
 signal VCE_DO			: std_logic_vector(7 downto 0);
@@ -114,6 +144,12 @@ signal gamepad_out	: std_logic_vector(1 downto 0);
 signal gamepad_port	: unsigned(2 downto 0);
 signal gamepad_nibble: std_logic;
 
+
+-- CD-ROM drive stuff...
+signal CDR_SEL_N		: std_logic;
+signal CD_RAM_SEL_N	: std_logic;
+signal SUP_RAM_SEL_N : std_logic;
+
 begin
 
 --------------------------------------------------------------------------------
@@ -126,6 +162,8 @@ port map(
 	RESET_N	=> RESET_N,
 	
 	IRQ1_N	=> VDC0_IRQ_N and VDC1_IRQ_N,
+	
+	IRQ2_N	=> IRQ2_N,
 
 	DI			=> CPU_DI,
 	DO 		=> CPU_DO,
@@ -139,6 +177,7 @@ port map(
 
 	CLKEN7	=> CLKEN7,
 	
+	CEC_N		=> CPU_ROM_SEL_N,
 	CEK_N		=> CPU_VCE_SEL_N,
 	CE7_N		=> CPU_VDC_SEL_N,
 	CER_N		=> CPU_RAM_SEL_N,
@@ -149,8 +188,23 @@ port map(
 	O			=> CPU_IO_DO,
 	
 	AUD_LDATA=> AUD_LDATA,
-	AUD_RDATA=> AUD_RDATA
+	AUD_RDATA=> AUD_RDATA,
+	
+	CDR_SEL_N_OUT=> CDR_SEL_N,
+	
+	CD_RAM_SEL_N_OUT => CD_RAM_SEL_N,
+	
+	SUP_RAM_SEL_N_OUT => SUP_RAM_SEL_N
 );
+
+CLKEN_OUT <= CPU_CLKEN;
+
+CDR_CS <= not CDR_SEL_N;
+
+CPU_ADDR <= CPU_A;
+CPU_DATA_OUT <= CPU_DO;
+RD_N <= CPU_RD_N;
+WR_N <= CPU_WR_N;
 
 VIDEO_CE <= VDC_CLKEN;
 VIDEO_VS <= not VS_N;
@@ -267,14 +321,17 @@ CPU_VDC1_SEL_N <= CPU_VDC_SEL_N or     CPU_A(3) or not CPU_A(4) when SGX = '1' e
 CPU_VPC_SEL_N  <= CPU_VDC_SEL_N or not CPU_A(3) or     CPU_A(4) when SGX = '1' else '1';
 
 -- CPU data bus
-CPU_DI <= RAM_DO  when CPU_RD_N = '0' and CPU_RAM_SEL_N  = '0' 
-	  else BRM_DO  when CPU_RD_N = '0' and CPU_BRM_SEL_N  = '0'
-	  else PRAM_DO when CPU_RD_N = '0' and CPU_PRAM_SEL_N = '0'
-	  else ROM_DO  when CPU_RD_N = '0' and CPU_A(20)      = '0'
-	  else VCE_DO  when CPU_RD_N = '0' and CPU_VCE_SEL_N  = '0'
-	  else VDC0_DO when CPU_RD_N = '0' and CPU_VDC0_SEL_N = '0'
-	  else VDC1_DO when CPU_RD_N = '0' and CPU_VDC1_SEL_N = '0'
-	  else VPC_DO  when CPU_RD_N = '0' and CPU_VPC_SEL_N  = '0'
+CPU_DI <= ROM_DO  when CPU_RD_N = '0' and CPU_ROM_SEL_N  = '0' -- 0x000000 to 0x0CFFFF -- ROM : Page $00 - $7F
+	  else SUP_DO  when CPU_RD_N = '0' and SUP_RAM_SEL_N  = '0' -- 0x0D0000 to 0x0FFFFF -- Super System Card RAM : Page $68 - $7F. 192KB. ElectronAsh.
+	  else CD_DO   when CPU_RD_N = '0' and CD_RAM_SEL_N   = '0' -- 0x100000 to 0x10FFFF -- CD drive RAM. 64KB : Page $80 - $87. 64KB. ElectronAsh.
+	  else BRM_DO  when CPU_RD_N = '0' and CPU_BRM_SEL_N  = '0' -- 0x1EE000 to 0x1EE7FF -- BRM : Page $F7. 2KB
+	  else RAM_DO  when CPU_RD_N = '0' and CPU_RAM_SEL_N  = '0'	-- 0x1F0000 to 0x1F7FFF -- RAM : Page $F8 - $FB. 32KB
+	  --else PRAM_DO when CPU_RD_N = '0' and CPU_PRAM_SEL_N = '0' -- Extra 32KB of RAM, for Populous only??
+	  else VCE_DO  when CPU_RD_N = '0' and CPU_VCE_SEL_N  = '0' -- 0x1FE400 to 0x1FE7FF
+	  else VDC0_DO when CPU_RD_N = '0' and CPU_VDC0_SEL_N = '0' -- 0x1FE000 to 0x1FE003, mirrored at 0x1FE004 to 0x1FE007 ?
+	  else VPC_DO  when CPU_RD_N = '0' and CPU_VPC_SEL_N  = '0' -- 0x1FE008 to 0x1FE00F
+	  else VDC1_DO when CPU_RD_N = '0' and CPU_VDC1_SEL_N = '0' -- 0x1FE010 to 0x1FE013, mirrored at 0x1FE014 to 0x1FE017 ?
+	  else CDR_DI  when CPU_RD_N = '0' and CDR_SEL_N = '0'      -- 0x1FF800 to 0x1FFBFF
 	  else X"FF";
 
 -- Perform address mangling to mimic HuCard chip mapping.
@@ -323,7 +380,7 @@ ROM_A <=   "00000"&CPU_A(16 downto 0)                                       when
           &(CPU_A(19) and not rombank(0))&CPU_A(18 downto 0)                when rom_sz = X"28" -- SF2
       else "00"&CPU_A(19 downto 0);                                                             -- 1MB and others
 
-ROM_RD    <= CPU_CLKEN and not CPU_A(20) and not CPU_RD_N and not RESET and CPU_PRAM_SEL_N;
+ROM_RD    <= CPU_CLKEN and not CPU_ROM_SEL_N and not CPU_RD_N and not RESET;-- and CPU_PRAM_SEL_N;
 ROM_CLKEN <= CLKEN7;
 
 process( CLK ) begin
@@ -345,25 +402,35 @@ process( CLK ) begin
 	end if;
 end process;
 
-PRAM : entity work.dpram generic map (15,8)
-port map (
-	clock		=> CLK,
-	address_a=> CPU_A(14 downto 0),
-	data_a	=> CPU_DO,
-	wren_a	=> CPU_CLKEN and not CPU_PRAM_SEL_N and not CPU_WR_N,
-	q_a		=> PRAM_DO
-);
+--PRAM : entity work.dpram generic map (15,8)	-- 32KB
+--port map (
+--	clock		=> CLK,
+--	address_a=> CPU_A(14 downto 0),
+--	data_a	=> CPU_DO,
+--	wren_a	=> CPU_CLKEN and not CPU_PRAM_SEL_N and not CPU_WR_N,
+--	q_a		=> PRAM_DO
+--);
 
-CPU_PRAM_SEL_N <= CPU_A(20) or not CPU_A(19) or not ROM_POP;
+--CPU_PRAM_SEL_N <= CPU_A(20) or not CPU_A(19) or not ROM_POP;
 
 
-RAM : entity work.dpram generic map (15,8)
-port map (
-	clock		=> CLK,
-	address_a=> RAM_A,
-	data_a	=> CPU_DO,
-	wren_a	=> CPU_CLKEN and not CPU_RAM_SEL_N and not CPU_WR_N,
-	q_a		=> RAM_DO
+--RAM : entity work.dpram generic map (15,8)	-- 32KB
+--port map (
+--	clock		=> CLK,
+--	address_a=> RAM_A,
+--	data_a	=> CPU_DO,
+--	wren_a	=> CPU_CLKEN and not CPU_RAM_SEL_N and not CPU_WR_N,
+--	q_a		=> RAM_DO
+--);
+
+
+
+main_ram_inst : main_ram PORT MAP (
+	clock	 => CLK,
+	address	 => RAM_A,
+	data	 => CPU_DO,
+	wren	 => CPU_CLKEN and not CPU_RAM_SEL_N and not CPU_WR_N,
+	q	 => RAM_DO
 );
 
 RAM_A(12 downto 0)  <= CPU_A(12 downto 0);
@@ -374,8 +441,30 @@ BRM_A <= CPU_A(10 downto 0);
 BRM_DI <= CPU_DO;
 BRM_WE <= CPU_CLKEN and not CPU_BRM_SEL_N and not CPU_WR_N;
 
+-- Super System Card RAM (ElectronAsh).
+SUPRAM : entity work.supram	-- 192KB - TESTING. Trying with 128KB atm, because otherwise it won't fit with SignalFap enabled.
+port map (
+	clock		=> CLK,
+	address	=> CPU_A(17 downto 0),	-- 192KB
+	data		=> CPU_DO,
+	wren		=> CPU_CLKEN and not SUP_RAM_SEL_N and not CPU_WR_N,
+	q			=> SUP_DO
+);
+
+-- CD Drive RAM (ElectronAsh).
+CDRAM : entity work.dpram generic map (16,8)	-- 64KB
+port map (
+	clock		=> CLK,
+	address_a=> CPU_A(15 downto 0),
+	data_a	=> CPU_DO,
+	wren_a	=> CPU_CLKEN and not CD_RAM_SEL_N and not CPU_WR_N,
+	q_a		=> CD_DO
+);
+
+
 -- I/O Port
-CPU_IO_DI(7 downto 4) <= "1011"; -- No CD-Rom unit, TGFX-16
+--CPU_IO_DI(7 downto 4) <= "1011"; -- No CD-Rom unit, TGFX-16
+CPU_IO_DI(7 downto 4) <= "0011"; -- CD-Rom attached! (bit 7 cleared). TGFX-16
 CPU_IO_DI(3 downto 0) <= 
 	     "0000"            when CPU_IO_DO(1) = '1' or  (CPU_IO_DO(0) = '1'  and gamepad_nibble = '1')
 	else joy1( 7 downto 4) when CPU_IO_DO(0) = '0' and gamepad_port = 0 and gamepad_nibble = '0'
@@ -394,6 +483,7 @@ CPU_IO_DI(3 downto 0) <=
 	else joy5( 3 downto 0) when CPU_IO_DO(0) = '1' and gamepad_port = 4 and gamepad_nibble = '0'
 	else joy5(11 downto 8) when CPU_IO_DO(0) = '0' and gamepad_port = 4 and gamepad_nibble = '1'
 	else "1111";
+
 
 process(clk)
 begin

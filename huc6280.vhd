@@ -25,6 +25,7 @@ entity huc6280 is
 		CLKEN		: out std_logic;
 		CLKEN7	: out std_logic;
 		
+		CEC_N		: out std_logic; -- huCard ROM
 		CEK_N		: out std_logic; -- VCE
 		CE7_N		: out std_logic; -- VDC
 		CER_N		: out std_logic; -- RAM
@@ -37,7 +38,12 @@ entity huc6280 is
 		O			: out std_logic_vector(7 downto 0);
 		
 		AUD_LDATA: out std_logic_vector(23 downto 0);
-		AUD_RDATA: out std_logic_vector(23 downto 0)
+		AUD_RDATA: out std_logic_vector(23 downto 0);
+		
+		CDR_SEL_N_OUT: out std_logic;
+	
+		CD_RAM_SEL_N_OUT: out std_logic;
+		SUP_RAM_SEL_N_OUT: out std_logic
 	);
 end huc6280;
 
@@ -79,6 +85,12 @@ signal PSG_SEL_N	: std_logic; -- PSG
 signal TMR_SEL_N	: std_logic; -- Timer
 signal IOP_SEL_N	: std_logic; -- I/O Port
 signal INT_SEL_N	: std_logic; -- Interrupt controller
+
+-- ElectronAsh.
+signal CDR_SEL_N  : std_logic; -- CD drive regs.
+signal CD_RAM_SEL_N : std_logic; -- CD drive extra 64KB of RAM.
+signal SUP_RAM_SEL_N : std_logic; -- Super System Card extra 192KB of RAM.
+
 
 signal PSG_DO		: std_logic_vector(7 downto 0);
 signal TMR_DO		: std_logic_vector(7 downto 0);
@@ -148,11 +160,16 @@ RD_N <= not CPU_OE;
 A <= CPU_A;
 HSM <= CPU_HSM;
 DO <= CPU_DO;
+CEC_N <= ROM_SEL_N;
 CEK_N <= VCE_SEL_N;
 CE7_N <= VDC_SEL_N;
 CER_N <= RAM_SEL_N;
 CEB_N <= BRM_SEL_N;
 CEI_N <= IOP_SEL_N;
+
+CDR_SEL_N_OUT <= CDR_SEL_N;
+CD_RAM_SEL_N_OUT <= CD_RAM_SEL_N;
+SUP_RAM_SEL_N_OUT <= SUP_RAM_SEL_N;
 
 O <= O_FF;
 CLKEN <= CLKEN_FF;
@@ -205,17 +222,54 @@ process( CLK ) begin
 end process;
 
 -- Address decoding
-ROM_SEL_N <= CPU_A(20);                                        -- ROM : Page $00 - $7F
-RAM_SEL_N <= '0' when CPU_A(20 downto 15) = "111110" else '1'; -- RAM : Page $F8 - $FB
-BRM_SEL_N <= '0' when CPU_A(20 downto 13) = x"F7"    else '1'; -- BRM : Page $F7
+--ROM_SEL_N <= CPU_A(20);                                        -- ROM : Page $00 - $7F
+--SUP_RAM_SEL_N <= '0' when CPU_A(20 downto 18) = "011"   else '1'; -- Super System Card RAM : Page $68 - $7F. 192KB. ElectronAsh.
+--CD_RAM_SEL_N  <= '0' when CPU_A(20 downto 16) = "10000" else '1'; -- CD drive RAM : Page $80 - $87. 64KB. ElectronAsh.
+--RAM_SEL_N <= '0' when CPU_A(20 downto 15) = "111110" else '1'; -- RAM : Page $F8 - $FB. 32KB
+--BRM_SEL_N <= '0' when CPU_A(20 downto 13) = x"F7"    else '1'; -- BRM : Page $F7
 
 -- I/O Page $FF
-VDC_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "000" else '1'; -- VDC : $0000 - $03FF
-VCE_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "001" else '1'; -- VCE : $0400 - $07FF
-PSG_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "010" else '1'; -- PSG : $0800 - $0BFF
-TMR_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "011" else '1'; -- TMR : $0C00 - $0FFF
-IOP_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "100" else '1'; -- IOP : $1000 - $13FF
-INT_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "101" else '1'; -- INT : $1400 - $17FF
+--VDC_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "000" else '1'; -- VDC : $0000 - $03FF
+--VCE_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "001" else '1'; -- VCE : $0400 - $07FF
+--PSG_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "010" else '1'; -- PSG : $0800 - $0BFF
+--TMR_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "011" else '1'; -- TMR : $0C00 - $0FFF
+--IOP_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "100" else '1'; -- IOP : $1000 - $13FF
+--INT_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "101" else '1'; -- INT : $1400 - $17FF
+--CDR_SEL_N <= '0' when CPU_A(20 downto 13) = x"FF" and CPU_A(12 downto 10) = "110" else '1'; -- CDR : $1800 - $1BFF (changed to mirror the regs throughout the whole range. ElectronAsh).
+
+--void pce_state::sgx_mem(address_map &map)
+--{
+--	map(0x000000, 0x0FFFFF).rw(m_cartslot, FUNC(pce_cart_slot_device::read_cart), FUNC(pce_cart_slot_device::write_cart));
+--	map(0x100000, 0x10FFFF).ram().share("cd_ram");
+--	map(0x110000, 0x1EDFFF).noprw();
+--	map(0x1EE000, 0x1EE7FF).rw(m_cd, FUNC(pce_cd_device::bram_r), FUNC(pce_cd_device::bram_w));
+--	map(0x1EE800, 0x1EFFFF).noprw();
+--	map(0x1F0000, 0x1F7FFF).ram().share("user_ram");
+--	map(0x1FE000, 0x1FE007).rw("huc6270_0", FUNC(huc6270_device::read), FUNC(huc6270_device::write)).mirror(0x03E0);
+--	map(0x1FE008, 0x1FE00F).rw("huc6202", FUNC(huc6202_device::read), FUNC(huc6202_device::write)).mirror(0x03E0);
+--	map(0x1FE010, 0x1FE017).rw("huc6270_1", FUNC(huc6270_device::read), FUNC(huc6270_device::write)).mirror(0x03E0);
+--	map(0x1FE400, 0x1FE7FF).rw(m_huc6260, FUNC(huc6260_device::read), FUNC(huc6260_device::write));
+--	map(0x1FF800, 0x1FFBFF).rw(FUNC(pce_state::pce_cd_intf_r), FUNC(pce_state::pce_cd_intf_w));
+--}
+
+
+-- Note: The "page" bits are CPU_A[20:13].
+--
+ROM_SEL_N     <= '0' when CPU_A >= x"000000" and CPU_A <= x"0CFFFF" else '1'; -- ROM : Page $00 - $7F
+SUP_RAM_SEL_N <= '0' when CPU_A >= x"0D0000" and CPU_A <= x"0FFFFF" else '1'; -- Super System Card RAM : Page $68 - $7F. 192KB.
+CD_RAM_SEL_N  <= '0' when CPU_A >= x"100000" and CPU_A <= x"10FFFF" else '1'; -- CD drive RAM : Page $80 - $87. 64KB. ElectronAsh. (should really be up to 0x10DFFF.)
+BRM_SEL_N     <= '0' when CPU_A >= x"1EE000" and CPU_A <= x"1EE7FF" else '1'; -- BRM : Page $F7. 2KB
+RAM_SEL_N     <= '0' when CPU_A >= x"1F0000" and CPU_A <= x"1F7FFF" else '1'; -- RAM : Page $F8 - $FB. 32KB
+
+-- I/O Page $FF...
+VDC_SEL_N <= '0' when CPU_A >= x"1FE000" and CPU_A <= x"1FE3FF" else '1'; -- VDC : $0000 - $03FF (huc6270)
+VCE_SEL_N <= '0' when CPU_A >= x"1FE400" and CPU_A <= x"1FE7FF" else '1'; -- VCE : $0400 - $07FF (huc6260)
+PSG_SEL_N <= '0' when CPU_A >= x"1FE800" and CPU_A <= x"1FEBFF" else '1'; -- PSG : $0800 - $0BFF
+TMR_SEL_N <= '0' when CPU_A >= x"1FEC00" and CPU_A <= x"1FEFFF" else '1'; -- TMR : $0C00 - $0FFF
+IOP_SEL_N <= '0' when CPU_A >= x"1FF000" and CPU_A <= x"1FF3FF" else '1'; -- IOP : $1000 - $13FF
+INT_SEL_N <= '0' when CPU_A >= x"1FF400" and CPU_A <= x"1FF7FF" else '1'; -- INT : $1400 - $17FF
+CDR_SEL_N <= '0' when CPU_A >= x"1FF800" and CPU_A <= x"1FFBFF" else '1'; -- CDR : $1800 - $1BFF (changed to mirror the regs throughout the whole range. ElectronAsh).
+
 
 -- On-chip hardware CPU interface
 process( CLK )
@@ -346,7 +400,7 @@ begin
 end process;
 
 -- CPU data bus
-CPU_DI <=   DI when (ROM_SEL_N and RAM_SEL_N and BRM_SEL_N and VDC_SEL_N and VCE_SEL_N) = '0'
+CPU_DI <=   DI when (ROM_SEL_N and RAM_SEL_N and BRM_SEL_N and VDC_SEL_N and VCE_SEL_N and CDR_SEL_N and CD_RAM_SEL_N) = '0'
 	else PSG_DO when PSG_SEL_N = '0'
 	else TMR_DO when TMR_SEL_N = '0'
 	else IOP_DO when IOP_SEL_N = '0'
