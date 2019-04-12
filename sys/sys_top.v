@@ -19,10 +19,6 @@
 //
 //============================================================================
 
-// Disable Ascal, for faster compiling during debugging...
-// (just use VGA).
-`define LITE
-
 module sys_top
 (
 	/////////// CLOCK //////////
@@ -405,7 +401,6 @@ wire [127:0] vbuf_writedata;
 wire  [15:0] vbuf_byteenable;
 wire         vbuf_write;
 
-`ifndef LITE
 ascal 
 #(
 	.RAMBASE(32'h20000000),
@@ -523,7 +518,6 @@ pll_hdmi_adj pll_hdmi_adj
 	.o_address(cfg_address),
 	.o_writedata(cfg_data)
 );
-`endif
 
 
 /////////////////////////  HDMI output  /////////////////////////////////

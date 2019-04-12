@@ -3,7 +3,7 @@ use STD.TEXTIO.ALL;
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 -- use IEEE.STD_LOGIC_ARITH.ALL;
--- use IEEE.STD_LOGIC_UNSIGNED.ALL;
+use IEEE.STD_LOGIC_UNSIGNED.ALL;
 use IEEE.STD_LOGIC_TEXTIO.all;
 use IEEE.NUMERIC_STD.ALL;
 
@@ -110,6 +110,8 @@ signal RAM_A			: std_logic_vector(14 downto 0);
 
 signal PRAM_DO			: std_logic_vector(7 downto 0);
 signal CPU_PRAM_SEL_N: std_logic;
+
+signal SUP_RAM_ADDR	: std_logic_vector(17 downto 0);
 
 signal SUP_DO     : std_logic_vector(7 downto 0);
 signal CD_DO     : std_logic_vector(7 downto 0);
@@ -441,11 +443,14 @@ BRM_A <= CPU_A(10 downto 0);
 BRM_DI <= CPU_DO;
 BRM_WE <= CPU_CLKEN and not CPU_BRM_SEL_N and not CPU_WR_N;
 
+
+SUP_RAM_ADDR <= std_logic_vector(unsigned(CPU_A(17 downto 0)) - "10000000000000000");
+
 -- Super System Card RAM (ElectronAsh).
-SUPRAM : entity work.supram	-- 192KB - TESTING. Trying with 128KB atm, because otherwise it won't fit with SignalFap enabled.
+SUPRAM : entity work.supram	-- 192KB
 port map (
 	clock		=> CLK,
-	address	=> CPU_A(17 downto 0),	-- 192KB
+	address	=> SUP_RAM_ADDR,
 	data		=> CPU_DO,
 	wren		=> CPU_CLKEN and not SUP_RAM_SEL_N and not CPU_WR_N,
 	q			=> SUP_DO

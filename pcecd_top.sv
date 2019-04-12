@@ -49,7 +49,7 @@ wire [7:0] data_buffer_dout;
 cd_data_buffer	cd_data_buffer_inst (
 	.clock ( CLOCK ),
 
-	.address ( data_buffer_addr ),
+	.address ( data_buffer_addr ),	// 64KB.
 	.data ( data_buffer_din ),
 	.wren ( data_buffer_wr ),
 	
@@ -133,13 +133,14 @@ reg [7:0] cd_command_buffer [0:15]/*synthesis noprune*/;
 reg [3:0] cd_command_buffer_pos = 0;
 
 
-reg [4:0] clock_divider;
+//reg [4:0] clock_divider;
+reg [6:0] clock_divider;	// TESTING !!
 
 always @(posedge CLOCK) clock_divider <= clock_divider + 1;
 
 (*keep*)wire slow_clock = clock_divider==0;
 
-reg [1:0] stat_counter;
+reg [2:0] stat_counter;
 
 
 //wire [7:0] gp_ram_do,adpcm_ram_do,save_ram_do;
@@ -308,7 +309,6 @@ reg [2:0] audio_state;
 //reg clear_ack = 0;
 
 // SCSI Command Handling
-//reg SCSI_think = 0;
 reg SCSI_RST = 0;
 reg SCSI_ACK = 0;
 reg SCSI_SEL = 0;
@@ -535,7 +535,6 @@ always_ff @(posedge CLOCK) begin
 	
 		//if (!CS_N) begin
 		begin
-			//SCSI_think <= 0;
 			if (!CS_N & CDR_RD_N_FALLING) begin
 				case (ADDR[7:0])
 					// Super System Card registers $18Cx range
@@ -665,14 +664,11 @@ always_ff @(posedge CLOCK) begin
 							bram_lock[5] <= 1'b0;		// Clear the IRQ_TRANSFER_DONE flag!
 							phase <= PHASE_BUS_FREE;	// ElectronAsh.
 						end
-						
-						//SCSI_think <= 1;
 					end
 					8'h02: begin	// 0x1802 INT_MASK
 						int_mask <= DIN;
 						// Set ACK signal to contents of the interrupt registers 7th bit? A full command will have this bit high
 						SCSI_ACK <= DIN[7];
-						//SCSI_think <= 1;
 						//IRQ2_ASSERT <= (DIN & bram_lock & 8'h7C) != 0; // RefreshIRQ2(); ... using din here
 						//$display("Write to 0x2. IRQ2_ASSERT will be: 0x%h", (int_mask & bram_lock & 8'h7C) != 0);
 					end
@@ -909,7 +905,7 @@ always_ff @(posedge CLOCK) begin
 							*/
 						end
 					endcase
-				end // End SCSI_Think();
+				end
 			end
 
 			if (slow_clock) begin
@@ -940,7 +936,7 @@ always_ff @(posedge CLOCK) begin
 							cd_command_buffer_pos <= 0;
 							read_state <= 0;
 							dir_state <= 0;
-							stat_counter <= 3;
+							stat_counter <= 7;
 							audio_state <= 0;
 							parse_command <= 1;
 							//cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
@@ -1143,6 +1139,7 @@ always_ff @(posedge CLOCK) begin
 					if (stat_counter>0) stat_counter <= stat_counter - 1;
 					else begin
 						parse_command <= 0;
+						data_buffer_pos <= 0;
 						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
 					end
 				end
