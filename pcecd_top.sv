@@ -133,14 +133,7 @@ reg [7:0] cd_command_buffer [0:15]/*synthesis noprune*/;
 reg [3:0] cd_command_buffer_pos = 0;
 
 
-//reg [4:0] clock_divider;
-reg [6:0] clock_divider;	// TESTING !!
-
-always @(posedge CLOCK) clock_divider <= clock_divider + 1;
-
-(*keep*)wire slow_clock = clock_divider==0;
-
-reg [2:0] stat_counter;
+reg [1:0] stat_counter;	// Kludge.
 
 
 //wire [7:0] gp_ram_do,adpcm_ram_do,save_ram_do;
@@ -345,7 +338,22 @@ reg SCSI_BIT0;
 //
 // ElectronAsh.
 
-reg [3:0] packet_bytecount;
+reg [3:0] packet_bytecount;	// Should probably be a wire [3:0]?
+
+always_ff begin
+	case (cd_command_buffer[0])
+		8'h00: packet_bytecount <= 6;		// Command = 0x00 TEST_UNIT_READY (6)
+		8'h08: packet_bytecount <= 6;		// Command = 0x08 READ (6)
+		8'hD8: packet_bytecount <= 10;	// Command = 0xD8 NEC_SET_AUDIO_START_POS (10)
+		8'hD9: packet_bytecount <= 10;	// Command = 0xD9 NEC_SET_AUDIO_STOP_POS (10)
+		8'hDA: packet_bytecount <= 10;	// Command = 0xDA NEC_PAUSE (10)
+		8'hDD: packet_bytecount <= 10;	// Command = 0xDD NEC_GET_SUBQ (10)
+		8'hDE: packet_bytecount <= 10;	// Command = 0xDE NEC_GET_DIR_INFO (10)
+		8'hFF: packet_bytecount <= 1;		// Command = 0xFF END_OF_LIST (1)
+		8'h81: packet_bytecount <= 1;		// Command = 0x81 RESET CMD BUFFER (1), maybe?
+	endcase
+end
+
 
 reg [3:0] status_state;
 reg [3:0] message_state;
@@ -362,8 +370,6 @@ reg [31:0] sd_sector_count;
 // READ command parsing stuff... ;)
 reg [20:0] frame/*synthesis noprune*/;
 reg [7:0] frame_count/*synthesis noprune*/;
-
-reg parse_command;
 
 reg [7:0] byte_count/*synthesis noprune*/;	// Byte count for TOC stuff / misc.
 
@@ -397,7 +403,6 @@ assign IRQ2_ASSERT = (int_mask & bram_lock & 8'h7C);
 // ADPCM_ADDR_CONT <= 8'h00;	// 0x180D. [7]=ADPCM Reset. [6]=ADPCM Play. [5]=ADPCM Repeat. [4]=ADPCM Set Length. [3]=ADPCM Read Addr. [1:0]=ADPCM Write Addr.
 // ADPCM_RATE <= 8'h00;			// 0x180E. ADPCM playback rate.
 // ADPCM_FADE <= 8'h00;			// 0x180F. ADPCM Fade in / out register.
-
 
 reg RD_N_1;
 reg RD_N_2;
@@ -481,8 +486,6 @@ always_ff @(posedge CLOCK) begin
 		data_buffer_wr_ena <= 0;
 		data_buffer_wr_force = 0;
 		
-		parse_command <= 0;
-		
 		read_state <= 0;
 		dir_state <= 0;
 		audio_state <= 0;
@@ -505,20 +508,6 @@ always_ff @(posedge CLOCK) begin
 		
 		old_ack <= sd_ack;
 
-	
-		case (cd_command_buffer[0])
-			8'h00: packet_bytecount <= 6;		// Command = 0x00 TEST_UNIT_READY (6)
-			8'h08: packet_bytecount <= 6;		// Command = 0x08 READ (6)
-			8'hD8: packet_bytecount <= 10;	// Command = 0xD8 NEC_SET_AUDIO_START_POS (10)
-			8'hD9: packet_bytecount <= 10;	// Command = 0xD9 NEC_SET_AUDIO_STOP_POS (10)
-			8'hDA: packet_bytecount <= 10;	// Command = 0xDA NEC_PAUSE (10)
-			8'hDD: packet_bytecount <= 10;	// Command = 0xDD NEC_GET_SUBQ (10)
-			8'hDE: packet_bytecount <= 10;	// Command = 0xDE NEC_GET_DIR_INFO (10)
-			8'hFF: packet_bytecount <= 1;		// Command = 0xFF END_OF_LIST (1)
-			8'h81: packet_bytecount <= 1;		// Command = 0x81 RESET CMD BUFFER (1), maybe?
-		endcase
-	
-	
 		if (!CS_N & CDR_RD_N_RISING & ADDR[7:0]==8'h08) begin
 			if (data_buffer_pos < data_buffer_size-1) begin
 				data_buffer_pos <= data_buffer_pos + 1;
@@ -648,7 +637,6 @@ always_ff @(posedge CLOCK) begin
 							command_state <= 0;
 							data_state <= 0;
 							cd_command_buffer_pos <= 0;
-							parse_command <= 0;
 							phase <= PHASE_COMMAND;	// ElectronAsh.
 						end
 					end
@@ -735,7 +723,6 @@ always_ff @(posedge CLOCK) begin
 				SCSI_BIT0 <= 1'b0;
 				
 				SCSI_ACK <= 1'b0;
-				//SCSI_RST <= 1'b0;	// PCE would normally clear this anyway. ElectronAsh.
 				
 				SCSI_SEL <= 0;					// Deselect.
 				status_state <= 0;
@@ -746,7 +733,6 @@ always_ff @(posedge CLOCK) begin
 				message_after_status <= 1'b0;
 				data_buffer_size <= 4'd0;
 				data_buffer_pos <= 0;
-				parse_command <= 0;
 				read_state <= 0;
 				int_mask         <= 8'h00;
 				bram_lock             <= 8'h00;
@@ -908,356 +894,319 @@ always_ff @(posedge CLOCK) begin
 				end
 			end
 
-			if (slow_clock) begin
-				if (SCSI_SEL && phase==PHASE_COMMAND && !parse_command) begin
-					case (command_state)
-					0: if (SCSI_ACK) begin
-						SCSI_REQ <= 1'b0;					// Clear the REQ.
-						command_state <= command_state + 1;
-					end
-					
-					1: if (!SCSI_ACK) begin
-						command_state <= command_state + 1;
-					end
-					
-					2: begin	// PCE should have written to CDC_CMD at this point!
-						cd_command_buffer[cd_command_buffer_pos] <= cdc_databus;	// Grab the packet byte!
-						cd_command_buffer_pos <= cd_command_buffer_pos + 1;
-						command_state <= command_state + 1;
-					end
-					
-					3: begin
-						if (cd_command_buffer_pos < packet_bytecount) begin	// More bytes left to grab...
-							SCSI_REQ <= 1;
-							command_state <= 0;
-						end
-						else begin						// Else...
-							SCSI_REQ <= 0;				// Stop REQuesting bytes!
-							cd_command_buffer_pos <= 0;
-							read_state <= 0;
-							dir_state <= 0;
-							stat_counter <= 7;
-							audio_state <= 0;
-							parse_command <= 1;
-							//cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
-							//phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-						end
-					end
-					default:;
-					endcase
+			if (SCSI_SEL && phase==PHASE_COMMAND) begin
+				case (command_state)
+				0: if (SCSI_ACK) begin		// The PCE should already have written to CDC_CMD (cdc_databus) before it raises ACK!
+					cd_command_buffer[cd_command_buffer_pos] <= cdc_databus;	// Grab the packet byte!
+					cd_command_buffer_pos <= cd_command_buffer_pos + 1;
+					SCSI_REQ <= 1'b0;					// Clear the REQ.
+					command_state <= command_state + 1;
 				end
 				
-				if (SCSI_SEL && phase==PHASE_STATUS) begin
-					case (status_state)
-					0: if (SCSI_ACK) begin
-						//cdc_databus <= cd_command_buffer[cd_command_buffer_pos];
-						SCSI_REQ <= 1'b0;					// Clear the REQ.
-						status_state <= status_state + 1;
+				1: if (!SCSI_ACK) begin
+					if (cd_command_buffer_pos < packet_bytecount) begin	// More bytes left to grab...
+						SCSI_REQ <= 1;
+						command_state <= 0;
 					end
-					
-					1: if (!SCSI_ACK) begin
-						status_state <= status_state + 1;
-					end
-					
-					2: /*if (!CS_N && CDR_RD_N_FALLING && ADDR[7:0]==8'h00)*/ begin	// Wait for PCE to read from CDC_STAT.
+					else begin						// Else...
+						SCSI_REQ <= 0;				// Stop REQuesting bytes!
 						cd_command_buffer_pos <= 0;
-						cdc_databus <= 8'h00;		// Returning 0x00 for the "message" byte atm.
-						phase <= PHASE_MESSAGE_IN;	// TESTING! ElectronAsh.
+						read_state <= 0;
+						dir_state <= 0;
+						stat_counter <= 3;
+						audio_state <= 0;
+						command_state <= command_state + 1;
 					end
+				end
+				
+				// command_state 2 (parse the command packet itself)...
+				2: begin			
+					case (cd_command_buffer[0])
+					8'h00: begin	// TEST_UNIT_READY (6).
+						message_after_status <= 1'b1;	// Need to confirm for this command.
+						cdc_databus <= 8'h00;
+						phase <= PHASE_STATUS;
+					end
+					
+					8'h08: begin	// READ (6).
+						case (read_state)
+						0: begin
+							frame <= {cd_command_buffer[1][4:0], cd_command_buffer[2], cd_command_buffer[3]};
+							frame_count <= cd_command_buffer[4];
 
-					default:;
-					endcase
-				end
-				
-				if (SCSI_SEL && phase==PHASE_MESSAGE_IN) begin
-					case (message_state)
-					0: if (SCSI_ACK) begin
-						//cdc_databus <= cd_command_buffer[cd_command_buffer_pos];
-						SCSI_REQ <= 1'b0;					// Clear REQ.
-						message_state <= message_state + 1;
-					end
-					
-					1: if (!SCSI_ACK) begin
-						message_state <= message_state + 1;
-					end
-					
-					2: begin
-						cd_command_buffer_pos <= 0;
-						phase <= PHASE_BUS_FREE;
-					end
-					
-					default:;
-					endcase
-				end
-				
-				if (SCSI_SEL && phase==PHASE_DATA_IN) begin
-					cdc_databus <= data_buffer_dout;
-					
-					case (data_state)
-					0: if (SCSI_ACK) begin
-						SCSI_REQ <= 1'b0;					// Clear the REQ.
-						data_state <= data_state + 1;
-					end
-					
-					1: if (!SCSI_ACK) begin
-						data_buffer_pos <= data_buffer_pos + 1;
-						data_state <= data_state + 1;
-					end
-					
-					2: begin
-						if (data_buffer_pos < data_buffer_size) begin
-							SCSI_REQ <= 1'b1;	// More bytes left to SEND to PCE.
-							data_state <= 0;
-						end
-						else begin						// Else, done!
+							sd_req_type <= 16'h4800;	// Request 2048-byte CD sectors from the HPS.
+							sd_lba <= {cd_command_buffer[1][4:0], cd_command_buffer[2], cd_command_buffer[3]};	// Can now use the raw MSF to request sectors from the HPS. ;)
+							
+							sd_sector_count <= 0;
+							
+							sd_rd <= 1'b1;
 							data_buffer_pos <= 0;
+							data_buffer_wr_ena <= 1;
+							read_state <= read_state + 1;
+						end
+						
+						1: begin
+							// Wait for sd_ack to go HIGH before continuing.
+							// (because it doesn't happen immediately, and we need to check for sd_ack low in state 2).
+							if (sd_ack) begin
+								sd_rd <= 1'b0;				// Need to clear sd_rd as soon as sd_ack goes high, apparently.
+								read_state <= read_state + 1;
+							end
+						end
+						
+						// This is a bit of a kludge atm, due to the HPS using a 16-bit bus for cart ROM / VHD loading... ElectronAsh.
+						2: begin											// sd_ack should stay high for the whole 512-byte (256-word) transfer.
+							if (sd_buff_wr) begin
+								data_buffer_pos <= data_buffer_pos + 1;
+								data_buffer_wr_force = 1;			// Force another write to the (8-bit) data buffer on the NEXT clock, for the upper data byte (16-bit HPS bus).
+								read_state <= read_state + 1;		// (the lower data byte will get written directly by the HPS via sd_wr.)
+							end
+							
+							if (!sd_ack) begin						// Have all 1024 WORDS (2048 bytes) of the CD sector data been written to the data buffer?...
+								sd_lba <= sd_lba + 1;
+								sd_sector_count <= sd_sector_count + 1;
+								read_state <= 4;
+							end
+						end
+						
+						3: begin
+							data_buffer_wr_force = 0;
+							data_buffer_pos <= data_buffer_pos + 1;
+							read_state <= read_state - 1;		// Loop back, to transfer the rest of the bytes for the current SD sector.
+						end
+						
+						4: begin
+							if (sd_sector_count < frame_count) begin	// Not done yet...
+								if (!sd_ack) begin		// Wait for sd_ack to go Low before asserting sd_rd again!
+									sd_rd <= 1;										// Request another SD sector.
+									read_state <= 1;								// Loop back!
+								end
+							end
+							else begin												// Else, done!
+								data_buffer_size <= frame_count*2048;
+								data_buffer_wr_ena <= 0;
+								motor_on <= 1;
+								//sd_rd <= 1'b0;				// Sanity check!
+								//sd_lba <= 0;					// Sanity check.
+								//sd_req_type <= 16'h0000;	// Set back to 0, in case other commands need RAW SD / VHD sectors (or TOC info).
+								data_buffer_pos <= 0;
+								bram_lock[6] <= 1'b1;	// Set IRQ_TRANSFER_READY flag!
+								phase <= PHASE_DATA_IN;
+							end
+						end
+						default:;
+						endcase
+					end
+					
+					8'hD8: begin	// NEC_SET_AUDIO_START_POS (10).
+						/*
+						data_buffer_pos <= 0;
+						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+						cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
+
+						case (audio_state)
+						0: begin
+							sd_req_type <= 16'h5200;	// Request 2352-byte (CD Audio) sector type.
+							//sd_lba <= 0;					// start MSF.
+							sd_lba <= 32'h00017AE1;		// start MSF. (Start of track 14 on Rondo, the in-game theme.)
+							sd_rd <= 1'b1;					// Go!
+							cdda_play <= 1'b1;			// Will only allow writes of CD sector data into the audio FIFO if this is High.
+							audio_state <= audio_state + 1;
+						end
+						1: begin
+							if (sd_ack) begin
+								sd_rd <= 1'b0;
+								audio_state <= audio_state + 1;
+							end
+						end
+						2: begin
+							if (!sd_ack && audio_fifo_usedw<800) begin	// "sd_ack" low denotes a sector has transferred.
+								sd_lba <= sd_lba + 1;
+								sd_rd <= 1'b1;
+								audio_state <= 1;	// Loop back!
+							end
+						end
+						endcase
+						*/
+
+						if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
+							if (stat_counter>0) stat_counter <= stat_counter - 1;
+							else begin
+								data_buffer_pos <= 0;
+								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
+								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
+							end
+						end
+					end
+					8'hD9: begin	// NEC_SET_AUDIO_STOP_POS (10).
+						if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
+							if (stat_counter>0) stat_counter <= stat_counter - 1;
+							else begin
+								data_buffer_pos <= 0;
+								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
+								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
+							end
+						end
+					end
+					8'hDA: begin	// NEC_PAUSE (10).
+						if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
+							if (stat_counter>0) stat_counter <= stat_counter - 1;
+							else begin
+								data_buffer_pos <= 0;
+								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
+								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
+							end
+						end
+					end
+					8'hDD: begin	// NEC_GET_SUBQ (10).
+						if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
+							if (stat_counter>0) stat_counter <= stat_counter - 1;
+							else begin
+								data_buffer_pos <= 0;
+								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
+								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
+							end
+						end
+					end
+					8'hDE: begin	// NEC_GET_DIR_INFO (10).
+						case (dir_state)
+						0: begin
+							sd_req_type <= {4'hD, cd_command_buffer[1][3:0], cd_command_buffer[2]};	// Request TOC from HPS.
+																															// Upper byte of "sd_req_type" will be 0xD0,0xD1,or 0xD2.
+																															// Lower byte of "sd_req_type" will be cd_command_buffer[2]. ElectronAsh.
+							sd_lba <= 0;
+							sd_rd <= 1'b1;
+							
+							data_buffer_pos <= 0;
+							data_buffer_wr_ena <= 1;
+							dir_state <= dir_state + 1;
+						end
+						1: begin
+							// Wait for sd_ack to go HIGH before continuing.
+							// (because it doesn't happen immediately, and we need to check for sd_ack low in state 2).
+							if (sd_ack) begin
+								sd_rd <= 1'b0;				// Need to clear sd_rd as soon as sd_ack goes high, apparently.
+								dir_state <= dir_state + 1;
+							end
+						end
+						
+						// This is a bit of a kludge atm, due to the HPS using a 16-bit bus for cart ROM / VHD loading... ElectronAsh.
+						2: begin											// sd_ack should stay high for the whole 4-byte (TOC) transfer.
+							if (sd_buff_wr) begin
+								data_buffer_pos <= data_buffer_pos + 1;
+								data_buffer_wr_force = 1;			// Force another write to the (8-bit) data buffer on the NEXT clock, for the upper data byte (16-bit HPS bus).
+								dir_state <= dir_state + 1;		// (the lower data byte will get written directly by the HPS via sd_wr.)
+							end
+							
+							if (!sd_ack) begin						// Have 2 WORDS (4 bytes) of TOC data been written to the data buffer yet?...
+								//sd_lba <= sd_lba + 1;				// We always transfer 4 bytes from the HPS (with padding), because of the HPS 16-bit bus.
+								//sd_sector_count <= sd_sector_count + 1;
+								dir_state <= 4;
+							end
+						end
+						
+						3: begin
+							data_buffer_wr_force = 0;
+							data_buffer_pos <= data_buffer_pos + 1;
+							dir_state <= dir_state - 1;		// Loop back, to transfer the rest of the bytes for the current TOC.
+						end
+						
+						4: begin
+							/*if (data_buffer_pos < 4) begin	// Not done yet...
+								if (!sd_ack) begin				// Wait for sd_ack to go Low before asserting sd_rd again!
+									sd_rd <= 1;						// Request another WORD from the HPS.
+									dir_state <= 1;				// Loop back!
+								end
+							end
+							else*/ begin											// Else, done!
+								//sd_rd <= 1'b0;										// Sanity check!
+								if (cd_command_buffer[1]==8'd0) data_buffer_size <= 2;	// TOC0 returns 2 bytes to the PCE.
+								if (cd_command_buffer[1]==8'd1) data_buffer_size <= 3;	// TOC1 returns 3 bytes to the PCE.
+								if (cd_command_buffer[1]==8'd2) data_buffer_size <= 4;	// TOC2 returns 4 bytes to the PCE.
+								data_buffer_wr_ena <= 0;
+								motor_on <= 1;
+								sd_req_type <= 16'h0000;	// Set back to 0, in case other commands need RAW SD / VHD sectors (or TOC info).
+								data_buffer_pos <= 0;
+								bram_lock[6] <= 1'b1;		// Set IRQ_TRANSFER_READY flag!
+								phase <= PHASE_DATA_IN;
+							end
+						end
+						
+						default:;
+						endcase
+
+					end	// end NEC_GET_DIR_INFO (10).
+					
+					8'hFF: begin	// END_OF_LIST (1) command.
 							cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
-							bram_lock[6] <= 1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
-							bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-							phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-						end
+							phase <= PHASE_STATUS;
 					end
-					
-					default:;
+					default:;	// Unknown command.
 					endcase
-				end
-		end // end if slow_clock.
-			
-		
-		if (parse_command) begin
-			case (cd_command_buffer[0])
-			8'h00: begin	// TEST_UNIT_READY (6).
-				message_after_status <= 1'b1;	// Need to confirm for this command.
-				parse_command <= 0;
-				cdc_databus <= 8'h00;
-				phase <= PHASE_STATUS;
-			end
-			
-			8'h08: begin	// READ (6).
-				case (read_state)
-				0: begin
-					frame <= {cd_command_buffer[1][4:0], cd_command_buffer[2], cd_command_buffer[3]};
-					frame_count <= cd_command_buffer[4];
+				end	// end begin
+				default:;
+				endcase	// endcase command_state.
+			end	// end  if (SCSI_SEL && phase==PHASE_COMMAND/
+				
 
-					sd_req_type <= 16'h4800;	// Request 2048-byte CD sectors from the HPS.
-					sd_lba <= {cd_command_buffer[1][4:0], cd_command_buffer[2], cd_command_buffer[3]};	// Can now use the raw MSF to request sectors from the HPS. ;)
-					
-					sd_sector_count <= 0;
-					
-					sd_rd <= 1'b1;
-					data_buffer_pos <= 0;
-					data_buffer_wr_ena <= 1;
-					read_state <= read_state + 1;
-				end
-				
-				1: begin
-					// Wait for sd_ack to go HIGH before continuing.
-					// (because it doesn't happen immediately, and we need to check for sd_ack low in state 2).
-					if (sd_ack) begin
-						sd_rd <= 1'b0;				// Need to clear sd_rd as soon as sd_ack goes high, apparently.
-						read_state <= read_state + 1;
-					end
-				end
-				
-				// This is a bit of a kludge atm, due to the HPS using a 16-bit bus for cart ROM / VHD loading... ElectronAsh.
-				2: begin											// sd_ack should stay high for the whole 512-byte (256-word) transfer.
-					if (sd_buff_wr) begin
-						data_buffer_pos <= data_buffer_pos + 1;
-						data_buffer_wr_force = 1;			// Force another write to the (8-bit) data buffer on the NEXT clock, for the upper data byte (16-bit HPS bus).
-						read_state <= read_state + 1;		// (the lower data byte will get written directly by the HPS via sd_wr.)
-					end
-					
-					if (!sd_ack) begin						// Have all 1024 WORDS (2048 bytes) of the CD sector data been written to the data buffer?...
-						sd_lba <= sd_lba + 1;
-						sd_sector_count <= sd_sector_count + 1;
-						read_state <= 4;
-					end
-				end
-				
-				3: begin
-					data_buffer_wr_force = 0;
+			
+			if (SCSI_SEL && phase==PHASE_DATA_IN && cd_command_buffer[0]!=8'h08) begin	// CD_READ (0x08) doesn't use the normal REQ / ACK handshake, AFAIK!
+				cdc_databus <= data_buffer_dout;		// Continually output new data from the buffer.
+				case (data_state)
+				0: if (SCSI_ACK) begin
+					SCSI_REQ <= 1'b0;					// Clear the REQ.
 					data_buffer_pos <= data_buffer_pos + 1;
-					read_state <= read_state - 1;		// Loop back, to transfer the rest of the bytes for the current SD sector.
+					data_state <= data_state + 1;
 				end
-				
-				4: begin
-					if (sd_sector_count < frame_count) begin	// Not done yet...
-						if (!sd_ack) begin		// Wait for sd_ack to go Low before asserting sd_rd again!
-							sd_rd <= 1;										// Request another SD sector.
-							read_state <= 1;								// Loop back!
-						end
+				1: if (!SCSI_ACK) begin
+					if (data_buffer_pos < data_buffer_size) begin
+						SCSI_REQ <= 1'b1;	// More bytes left to SEND to PCE.
+						data_state <= 0;
 					end
-					else begin												// Else, done!
-						//sd_rd <= 1'b0;										// Sanity check!
-						data_buffer_size <= frame_count*2048;
-						data_buffer_wr_ena <= 0;
-						parse_command <= 0;
-						motor_on <= 1;
-						sd_lba <= 0;					// Sanity check.
-						sd_req_type <= 16'h0000;	// Set back to 0, in case other commands need RAW SD / VHD sectors (or TOC info).
+					else begin						// Else, done!
 						data_buffer_pos <= 0;
-						bram_lock[6] <= 1'b1;	// Set IRQ_TRANSFER_READY flag!
-						phase <= PHASE_DATA_IN;
+						cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
+						bram_lock[6] <= 1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
+						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
 					end
 				end
 				default:;
 				endcase
 			end
+
 			
-			8'hD8: begin	// NEC_SET_AUDIO_START_POS (10).
-				/*
-				data_buffer_pos <= 0;
-				bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-				cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
-
-				case (audio_state)
-				0: begin
-					sd_req_type <= 16'h5200;	// Request 2352-byte (CD Audio) sector type.
-					//sd_lba <= 0;					// start MSF.
-					sd_lba <= 32'h00017AE1;		// start MSF. (Start of track 14 on Rondo, the in-game theme.)
-					sd_rd <= 1'b1;					// Go!
-					cdda_play <= 1'b1;			// Will only allow writes of CD sector data into the audio FIFO if this is High.
-					audio_state <= audio_state + 1;
+			if (SCSI_SEL && phase==PHASE_STATUS) begin
+				case (status_state)
+				0: if (SCSI_ACK) begin
+					SCSI_REQ <= 1'b0;					// Clear the REQ.
+					status_state <= status_state + 1;
 				end
-				1: begin
-					if (sd_ack) begin
-						sd_rd <= 1'b0;
-						audio_state <= audio_state + 1;
-					end
+				1: if (!SCSI_ACK) begin
+					cdc_databus <= 8'h00;		// Returning 0x00 for the "message" byte atm.
+					phase <= PHASE_MESSAGE_IN;	// TESTING! ElectronAsh.
 				end
-				2: begin
-					if (!sd_ack && audio_fifo_usedw<800) begin	// "sd_ack" low denotes a sector has transferred.
-						sd_lba <= sd_lba + 1;
-						sd_rd <= 1'b1;
-						audio_state <= 1;	// Loop back!
-					end
-				end
-				endcase
-				*/
-
-				if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-					if (stat_counter>0) stat_counter <= stat_counter - 1;
-					else begin
-						parse_command <= 0;
-						data_buffer_pos <= 0;
-						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-					end
-				end
-			end
-			8'hD9: begin	// NEC_SET_AUDIO_STOP_POS (10).
-				if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-					if (stat_counter>0) stat_counter <= stat_counter - 1;
-					else begin
-						data_buffer_pos <= 0;
-						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-						cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
-						parse_command <= 0;
-						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-					end
-				end
-			end
-			8'hDA: begin	// NEC_PAUSE (10).
-				if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-					if (stat_counter>0) stat_counter <= stat_counter - 1;
-					else begin
-						data_buffer_pos <= 0;
-						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-						cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
-						parse_command <= 0;
-						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-					end
-				end
-			end
-			8'hDD: begin	// NEC_GET_SUBQ (10).
-				if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-					if (stat_counter>0) stat_counter <= stat_counter - 1;
-					else begin
-						data_buffer_pos <= 0;
-						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-						cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
-						parse_command <= 0;
-						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-					end
-				end
-			end
-			8'hDE: begin	// NEC_GET_DIR_INFO (10).
-				case (dir_state)
-				0: begin
-					sd_req_type <= {4'hD, cd_command_buffer[1][3:0], cd_command_buffer[2]};	// Request TOC from HPS.
-																													// Upper byte of "sd_req_type" will be 0xD0,0xD1,or 0xD2.
-																													// Lower byte of "sd_req_type" will be cd_command_buffer[2]. ElectronAsh.
-					sd_lba <= 0;
-					sd_rd <= 1'b1;
-					
-					data_buffer_pos <= 0;
-					data_buffer_wr_ena <= 1;
-					dir_state <= dir_state + 1;
-				end
-				1: begin
-					// Wait for sd_ack to go HIGH before continuing.
-					// (because it doesn't happen immediately, and we need to check for sd_ack low in state 2).
-					if (sd_ack) begin
-						sd_rd <= 1'b0;				// Need to clear sd_rd as soon as sd_ack goes high, apparently.
-						dir_state <= dir_state + 1;
-					end
-				end
-				
-				// This is a bit of a kludge atm, due to the HPS using a 16-bit bus for cart ROM / VHD loading... ElectronAsh.
-				2: begin											// sd_ack should stay high for the whole 4-byte (TOC) transfer.
-					if (sd_buff_wr) begin
-						data_buffer_pos <= data_buffer_pos + 1;
-						data_buffer_wr_force = 1;			// Force another write to the (8-bit) data buffer on the NEXT clock, for the upper data byte (16-bit HPS bus).
-						dir_state <= dir_state + 1;		// (the lower data byte will get written directly by the HPS via sd_wr.)
-					end
-					
-					if (!sd_ack) begin						// Have 2 WORDS (4 bytes) of TOC data been written to the data buffer yet?...
-						//sd_lba <= sd_lba + 1;				// We always transfer 4 bytes from the HPS (with padding), because of the HPS 16-bit bus.
-						//sd_sector_count <= sd_sector_count + 1;
-						dir_state <= 4;
-					end
-				end
-				
-				3: begin
-					data_buffer_wr_force = 0;
-					data_buffer_pos <= data_buffer_pos + 1;
-					dir_state <= dir_state - 1;		// Loop back, to transfer the rest of the bytes for the current TOC.
-				end
-				
-				4: begin
-					/*if (data_buffer_pos < 4) begin	// Not done yet...
-						if (!sd_ack) begin				// Wait for sd_ack to go Low before asserting sd_rd again!
-							sd_rd <= 1;						// Request another WORD from the HPS.
-							dir_state <= 1;				// Loop back!
-						end
-					end
-					else*/ begin											// Else, done!
-						//sd_rd <= 1'b0;										// Sanity check!
-						if (cd_command_buffer[1]==8'd0) data_buffer_size <= 2;	// TOC0 returns 2 bytes to the PCE.
-						if (cd_command_buffer[1]==8'd1) data_buffer_size <= 3;	// TOC1 returns 3 bytes to the PCE.
-						if (cd_command_buffer[1]==8'd2) data_buffer_size <= 4;	// TOC2 returns 4 bytes to the PCE.
-						data_buffer_wr_ena <= 0;
-						parse_command <= 0;
-						motor_on <= 1;
-						sd_req_type <= 16'h0000;	// Set back to 0, in case other commands need RAW SD / VHD sectors (or TOC info).
-						data_buffer_pos <= 0;
-						bram_lock[6] <= 1'b1;		// Set IRQ_TRANSFER_READY flag!
-						phase <= PHASE_DATA_IN;
-					end
-				end
-				
 				default:;
 				endcase
-
-			end	// end NEC_GET_DIR_INFO (10).
-			
-			8'hFF: begin	// END_OF_LIST (1) command.
-			
 			end
-			default:;	// Unknown command.
-			endcase
-		end
 			
 			
+			if (SCSI_SEL && phase==PHASE_MESSAGE_IN) begin
+				case (message_state)
+				0: if (SCSI_ACK) begin
+					SCSI_REQ <= 1'b0;					// Clear the REQ.
+					message_state <= message_state + 1;
+				end
+				1: if (!SCSI_ACK) begin
+					phase <= PHASE_BUS_FREE;
+				end
+				default:;
+				endcase
+			end
+
 		end // end if sel - and our main logic
 	end // end else main
 end // end always
