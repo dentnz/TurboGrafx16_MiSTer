@@ -73,13 +73,14 @@ reg sd_ack_1;
 
 always @(posedge CLOCK) begin
 	sd_ack_1 <= sd_ack;
-	left_chan <= !left_chan;
 	
 	// Set left channel on rising edge of sd_ack.
 	// This should override the above assign!
 	if (sd_ack && !sd_ack_1) left_chan <= 1'b1;
 
-	if (audio_clk_div==0) begin
+	if (audio_clk_div>0) audio_clk_div <= audio_clk_div - 1;	
+	else begin
+		left_chan <= !left_chan;
 		audio_clk_div <= 486;
 		if (left_chan) temp_l <= audio_fifo_dout;
 		else begin
@@ -89,7 +90,6 @@ always @(posedge CLOCK) begin
 			samp_r <= audio_fifo_dout;
 		end
 	end
-	else audio_clk_div <= audio_clk_div - 1;	
 end
 
 wire audio_clk_en = (audio_clk_div==0);
@@ -206,7 +206,7 @@ always_comb begin
 		8'h00: DOUT <= cdc_status;
 		8'h01: DOUT <= cdc_databus;
 		8'h02: DOUT <= int_mask;		// Or INT_MASK.
-		8'h03: DOUT <= bram_lock;
+		8'h03: DOUT <= {bram_locked, bram_lock[6:2], left_chan, bram_lock[0]};
 		8'h04: DOUT <= cd_reset;
 		8'h05: DOUT <= convert_pcm;
 		8'h06: DOUT <= pcm_data;
@@ -431,6 +431,9 @@ always_ff @(posedge CLOCK) begin
 		
 		SCSI_SEL <= 0;
 		
+		SCSI_RST <= 1;		// TESTING. Start off with the "drive" in reset.
+								// The PCE (core) should deassert this on start-up of the SS3 CD BIOS.
+		
 		status_state <= 0;
 		message_state <= 0;
 		command_state <= 0;
@@ -551,14 +554,14 @@ always_ff @(posedge CLOCK) begin
 						//DOUT <= bram_lock;
 						bram_locked <= 1;					// A read from this reg LOCKs BRAM access!
 						//bram_lock <= (bram_lock & 8'h6E) | bram_locked<<7 | motor_on<<4 | !bram_lock[1]<<1;
-						bram_lock[7] = bram_locked;	// [7]=BRAM Locked.
-						bram_lock[6] = bram_lock[6];	// [6]=READY_INT_SIG.
-						//bram_lock[5] = bram_lock[5];	// [5]=DONE_INT_SIG.
-						bram_lock[5] = 1'b1;	// [5]=DONE_INT_SIG. TESTING !!!!! PCE needs to see this set after a CDDA Play command (and probably others). ElectronAsh.
-						bram_lock[4] = motor_on;		// [4]=BRAM_INT_SIG.
-						bram_lock[3] = bram_lock[3];	// [3]=ADPCM_FULL_INT_SIG.
-						bram_lock[2] = bram_lock[2];	// [2]=ADPCM_HALF_INT_SIG.
-						bram_lock[1] = !bram_lock[1];	// [1]=CDDA L/R speaker select. (hacky toggling thing from MAME).
+						//bram_lock[7] <= bram_locked;	// [7]=BRAM Locked.
+						//bram_lock[6] <= bram_lock[6];	// [6]=READY_INT_SIG.
+						//bram_lock[5] <= bram_lock[5];	// [5]=DONE_INT_SIG.
+						//bram_lock[5] <= 1'b1;	// [5]=DONE_INT_SIG. TESTING !!!!! PCE needs to see this set after a CDDA Play command (and probably others). ElectronAsh.
+						//bram_lock[4] <= motor_on;		// [4]=BRAM_INT_SIG.
+						//bram_lock[3] <= bram_lock[3];	// [3]=ADPCM_FULL_INT_SIG.
+						//bram_lock[2] <= bram_lock[2];	// [2]=ADPCM_HALF_INT_SIG.
+						//bram_lock[1] <= !bram_lock[1];	// [1]=CDDA L/R speaker select. (hacky toggling thing from MAME).
 					end
 					8'h04: begin	// 0x1804 CD_RESET
 						$display("Read 0x4. dout = 0x%h", cd_reset);
@@ -581,7 +584,7 @@ always_ff @(posedge CLOCK) begin
 					end
 					8'h08: begin	// 0x1808
 						//DOUT <= adpcm_address_low;
-						adpcm_address_low <= data_buffer_dout;			// TESTING!!
+						adpcm_address_low <= data_buffer_dout;		// Looks like it does actually need this delay, so it sees the next CD sector byte on the NEXT read of 0x08!
 					end
 					8'h09: begin	// 0x1809
 						//DOUT <= adpcm_address_high;
@@ -774,7 +777,7 @@ always_ff @(posedge CLOCK) begin
 								SCSI_BIT0 <= 0;
 								
 								//bram_lock <= bram_lock & ~8'h20; // CDIRQ(IRQ_8000, PCECD_Drive_IRQ_DATA_TRANSFER_DONE);
-								//bram_lock[5] <= 1'b0;	// Clear the IRQ_TRANSFER_DONE flag!
+								bram_lock[5] <= 1'b0;	// Clear the IRQ_TRANSFER_DONE flag!
 								
 								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 								cd_command_buffer_pos <= 0;
@@ -945,17 +948,13 @@ always_ff @(posedge CLOCK) begin
 							read_state <= read_state + 1;
 						end
 						
-						1: begin
-							// Wait for sd_ack to go HIGH before continuing.
-							// (because it doesn't happen immediately, and we need to check for sd_ack low in state 2).
-							if (sd_ack) begin
-								sd_rd <= 1'b0;				// Need to clear sd_rd as soon as sd_ack goes high, apparently.
-								read_state <= read_state + 1;
-							end
+						1: if (sd_ack) begin											// sd_ack should stay high for the whole 512-byte (256-word) transfer.
+							sd_rd <= 1'b0;				// Need to clear sd_rd as soon as sd_ack goes high, apparently.
+							read_state <= read_state + 1;
 						end
 						
 						// This is a bit of a kludge atm, due to the HPS using a 16-bit bus for cart ROM / VHD loading... ElectronAsh.
-						2: begin											// sd_ack should stay high for the whole 512-byte (256-word) transfer.
+						2: begin						
 							if (sd_buff_wr) begin
 								data_buffer_pos <= data_buffer_pos + 1;
 								data_buffer_wr_force = 1;			// Force another write to the (8-bit) data buffer on the NEXT clock, for the upper data byte (16-bit HPS bus).
@@ -1029,14 +1028,15 @@ always_ff @(posedge CLOCK) begin
 						endcase
 						*/
 
-						if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-							if (stat_counter>0) stat_counter <= stat_counter - 1;
-							else begin
+						//if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
+							//if (stat_counter>0) stat_counter <= stat_counter - 1;
+							//else begin
 								data_buffer_pos <= 0;
+								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-							end
-						end
+							//end
+						//end
 					end
 					8'hD9: begin	// NEC_SET_AUDIO_STOP_POS (10).
 						if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
@@ -1153,7 +1153,7 @@ always_ff @(posedge CLOCK) begin
 				
 
 			
-			if (SCSI_SEL && phase==PHASE_DATA_IN && cd_command_buffer[0]!=8'h08) begin	// CD_READ (0x08) doesn't use the normal REQ / ACK handshake, AFAIK!
+			if (SCSI_SEL && phase==PHASE_DATA_IN) begin
 				cdc_databus <= data_buffer_dout;		// Continually output new data from the buffer.
 				case (data_state)
 				0: if (SCSI_ACK) begin

@@ -257,7 +257,7 @@ end process;
 --
 ROM_SEL_N     <= '0' when CPU_A >= x"000000" and CPU_A <= x"0CFFFF" else '1'; -- ROM : Page $00 - $7F
 SUP_RAM_SEL_N <= '0' when CPU_A >= x"0D0000" and CPU_A <= x"0FFFFF" else '1'; -- Super System Card RAM : Page $68 - $7F. 192KB.
-CD_RAM_SEL_N  <= '0' when CPU_A >= x"100000" and CPU_A <= x"10FFFF" else '1'; -- CD drive RAM : Page $80 - $87. 64KB. ElectronAsh. (should really be up to 0x10DFFF.)
+CD_RAM_SEL_N  <= '0' when CPU_A >= x"100000" and CPU_A <= x"10FFFF" else '1'; -- CD drive RAM : Page $80 - $87. 64KB. ElectronAsh.
 BRM_SEL_N     <= '0' when CPU_A >= x"1EE000" and CPU_A <= x"1EE7FF" else '1'; -- BRM : Page $F7. 2KB
 RAM_SEL_N     <= '0' when CPU_A >= x"1F0000" and CPU_A <= x"1F7FFF" else '1'; -- RAM : Page $F8 - $FB. 32KB
 

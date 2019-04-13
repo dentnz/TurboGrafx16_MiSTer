@@ -64,7 +64,7 @@ BEGIN
 		clock_enable_input_a => "BYPASS",
 		clock_enable_output_a => "BYPASS",
 		intended_device_family => "Cyclone V",
-		lpm_hint => "ENABLE_RUNTIME_MOD=YES,INSTANCE_NAME=RAM",
+		lpm_hint => "ENABLE_RUNTIME_MOD=YES,INSTANCE_NAME=USER",
 		lpm_type => "altsyncram",
 		numwords_a => 32768,
 		operation_mode => "SINGLE_PORT",
@@ -108,7 +108,7 @@ END SYN;
 -- Retrieval info: PRIVATE: INIT_TO_SIM_X NUMERIC "0"
 -- Retrieval info: PRIVATE: INTENDED_DEVICE_FAMILY STRING "Cyclone V"
 -- Retrieval info: PRIVATE: JTAG_ENABLED NUMERIC "1"
--- Retrieval info: PRIVATE: JTAG_ID STRING "RAM"
+-- Retrieval info: PRIVATE: JTAG_ID STRING "USER"
 -- Retrieval info: PRIVATE: MAXIMUM_DEPTH NUMERIC "0"
 -- Retrieval info: PRIVATE: MIFfilename STRING ""
 -- Retrieval info: PRIVATE: NUMWORDS_A NUMERIC "32768"
@@ -128,7 +128,7 @@ END SYN;
 -- Retrieval info: CONSTANT: CLOCK_ENABLE_INPUT_A STRING "BYPASS"
 -- Retrieval info: CONSTANT: CLOCK_ENABLE_OUTPUT_A STRING "BYPASS"
 -- Retrieval info: CONSTANT: INTENDED_DEVICE_FAMILY STRING "Cyclone V"
--- Retrieval info: CONSTANT: LPM_HINT STRING "ENABLE_RUNTIME_MOD=YES,INSTANCE_NAME=RAM"
+-- Retrieval info: CONSTANT: LPM_HINT STRING "ENABLE_RUNTIME_MOD=YES,INSTANCE_NAME=USER"
 -- Retrieval info: CONSTANT: LPM_TYPE STRING "altsyncram"
 -- Retrieval info: CONSTANT: NUMWORDS_A NUMERIC "32768"
 -- Retrieval info: CONSTANT: OPERATION_MODE STRING "SINGLE_PORT"
