@@ -484,7 +484,7 @@ always_ff @(posedge CLOCK) begin
 		
 		message_after_status <= 1'b0;
 		
-		data_buffer_size <= 4'd0;
+		data_buffer_size <= 14'd0;
 		data_buffer_pos <= 0;
 		data_buffer_wr_ena <= 0;
 		data_buffer_wr_force = 0;
@@ -511,7 +511,7 @@ always_ff @(posedge CLOCK) begin
 		
 		old_ack <= sd_ack;
 
-		if (!CS_N & CDR_RD_N_RISING & ADDR[7:0]==8'h08) begin
+		if (phase==PHASE_DATA_IN && !CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h08) begin
 			if (data_buffer_pos < data_buffer_size-1) begin
 				data_buffer_pos <= data_buffer_pos + 1;
 			end
@@ -519,7 +519,6 @@ always_ff @(posedge CLOCK) begin
 				data_buffer_pos <= 0;
 				bram_lock[6] <= 1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
 				bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-				cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 				phase <= PHASE_STATUS;
 			end
 		end
@@ -622,9 +621,9 @@ always_ff @(posedge CLOCK) begin
 						//SCSI_IO   <= DIN[3];
 
 						// Clear IRQ bits [7:5].
-						bram_lock[7] <= 1'b0;	//	 [7]=Not sure.
-						bram_lock[6] <= 1'b0;	//	 [6]=READY_INT_SIG.
-						bram_lock[5] <= 1'b0;	//	 [5]=DONE_INT_SIG.
+						//bram_lock[7] <= 1'b0;	//	 Clear [7]=bram_locked, but not?
+						bram_lock[6] <= 1'b0;	//	 Clear [6]=READY_INT_SIG.
+						bram_lock[5] <= 1'b0;	//	 Clear [5]=DONE_INT_SIG.
 						
 						// The MAME code normally assumes there is only ONE drive on the bus.
 						// So no real point checking to see if the ID matches before setting SCSI_SEL.
@@ -734,7 +733,7 @@ always_ff @(posedge CLOCK) begin
 				dir_state <= 0;
 				data_state <= 0;
 				message_after_status <= 1'b0;
-				data_buffer_size <= 4'd0;
+				data_buffer_size <= 14'd0;
 				data_buffer_pos <= 0;
 				read_state <= 0;
 				int_mask         <= 8'h00;
@@ -757,141 +756,57 @@ always_ff @(posedge CLOCK) begin
 				// Stop all audio
 				//phase <= PHASE_BUS_FREE;
 				//bus_phase_changed <= 1;
+				
+				old_phase <= ~phase;	// ElectronAsh. (force a phase update after reset).
 			end
 			else begin	// SCSI_RST is Low (run)...
 				
 				if (phase!=old_phase) begin
 					case (phase)
 						PHASE_BUS_FREE: begin
-							//if (SCSI_SEL) begin
-								$display ("PHASE_BUS_FREE");
-								//bus_phase_changed <= 1;
-								//cdc_status <= cdc_status & ~BUSY_BIT & ~MSG_BIT & ~CD_BIT & ~IO_BIT & ~REQ_BIT;
-								SCSI_BSY <= 0;		// Clear BUSY_BIT.
-								SCSI_REQ <= 0;		// Clear REQ_BIT.
-								SCSI_MSG <= 0;		// Clear MSG_BIT.
-								SCSI_CD  <= 0;		// Clear CD_BIT.
-								SCSI_IO  <= 0;		// Clear IO_BIT.
-								SCSI_BIT2 <= 0;	// Deselection seems to clear the lower bits (SCSI ID?) as well. ElectronAsh.
-								SCSI_BIT1 <= 0;
-								SCSI_BIT0 <= 0;
-								
-								//bram_lock <= bram_lock & ~8'h20; // CDIRQ(IRQ_8000, PCECD_Drive_IRQ_DATA_TRANSFER_DONE);
-								bram_lock[5] <= 1'b0;	// Clear the IRQ_TRANSFER_DONE flag!
-								
-								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
-								cd_command_buffer_pos <= 0;
-							//end
+							$display ("PHASE_BUS_FREE");
+							SCSI_BSY <= 0;		// Clear BUSY_BIT.
+							SCSI_REQ <= 0;		// Clear REQ_BIT.
+							SCSI_MSG <= 0;		// Clear MSG_BIT.
+							SCSI_CD  <= 0;		// Clear CD_BIT.
+							SCSI_IO  <= 0;		// Clear IO_BIT.
+							SCSI_BIT2 <= 0;	// Deselection seems to clear the lower bits (SCSI ID?) as well. ElectronAsh.
+							SCSI_BIT1 <= 0;
+							SCSI_BIT0 <= 0;
+							bram_lock[5] <= 1'b0;	// Clear the IRQ_TRANSFER_DONE flag!
+							cd_command_buffer_pos <= 0;
 						end
 						PHASE_COMMAND: begin	
 							$display ("PHASE_COMMAND");
-							//cdc_status <= cdc_status | BUSY_BIT | CD_BIT | REQ_BIT & ~IO_BIT & ~MSG_BIT;
 							SCSI_BSY <= 1;	// Set BUSY_BIT.
 							SCSI_REQ <= 1;	// Set REQ_BIT.
 							SCSI_MSG <= 0;	// Clear MSG_BIT.
 							SCSI_CD  <= 1;	// Set CD_BIT.
 							SCSI_IO  <= 0;	// Clear IO_BIT.
-							//$display ("SCSI_ACK is %b", SCSI_ACK);
-							//$display ("SCSI_REQ is %b", SCSI_REQ);
-							/*
-							$display ("cd_command_buffer_pos is %h", cd_command_buffer_pos);
-							if (SCSI_REQ && SCSI_ACK) begin	// Databus is valid now, so we need to collect a command
-								$display ("phase_command - setting req false and adding command to buffer");
-								if (cd_command_buffer_pos==0) command_byte <= cdc_databus;
-								cd_command_buffer[cd_command_buffer_pos] <= cdc_databus;
-								
-								if (cd_command_buffer_pos == packet_bytecount) phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-								else cd_command_buffer_pos <= cd_command_buffer_pos + 1;
-								
-								// Set the REQ low
-								SCSI_REQ <= 0;	// Clear REQ_BIT.
-								// @todo sort Ack clearing out as soon as we get an ACK that is!
-								//clear_ack <= 0;
-							end
-							if (!SCSI_REQ && !SCSI_ACK && cd_command_buffer_pos > 4'h0) begin
-								// We got a command!!!!!!!
-								//$display ("We got a command! $%h",  cd_command_buffer [cd_command_buffer_pos]);
-								$display("We got a command!");
-								//$finish;
-							end
-							*/
 						end
 						PHASE_STATUS: begin
 							$display ("PHASE_STATUS");
-							//cdc_status <= cdc_status | BUSY_BIT | CD_BIT | IO_BIT | REQ_BIT & ~MSG_BIT;
 							SCSI_BSY <= 1;	// Set BUSY_BIT.
 							SCSI_REQ <= 1;	// Set REQ_BIT.
 							SCSI_MSG <= 0;	// Clear MSG_BIT.
 							SCSI_CD  <= 1;	// Set CD_BIT.
 							SCSI_IO  <= 1;	// Set IO_BIT.
-							/*
-							if (SCSI_REQ && SCSI_ACK) begin
-								// Set the REQ low
-								//cdc_status[6] <= 0;
-								SCSI_REQ <= 0;
-								cd_status_sent <= 1;
-							end
-							if (!SCSI_REQ && !SCSI_ACK && cd_status_sent) begin
-								// Status sent, so get ready to send the message!
-								cd_status_sent <= 0;
-								// @todo message_pending message goes on the buss
-								//cd_bus.DB = cd.message_pending;
-								phase <= PHASE_MESSAGE_IN;
-								//bus_phase_changed <= 1;
-							end
-							*/
 						end
 						PHASE_DATA_IN: begin
 							$display ("PHASE_DATA_IN");
-							//cdc_status <= cdc_status | BUSY_BIT |  REQ_BIT | IO_BIT & ~MSG_BIT & ~CD_BIT;
 							SCSI_BSY <= 1;	// Set BUSY_BIT.
 							SCSI_REQ <= 1;	// Set REQ_BIT.
 							SCSI_MSG <= 0;	// Clear MSG_BIT.
 							SCSI_CD <= 0;	// Clear CD_BIT.
 							SCSI_IO <= 1;	// Set IO_BIT.
-							//$display ("PHASE_DATA_IN TBC");
-							// if (!SCSI_REQ && !SCSI_ACK) {
-							// if (din.in_count == 0) // aaand we're done!
-							// {
-							//     CDIRQCallback(0x8000 | PCECD_Drive_IRQ_DATA_TRANSFER_READY);
-							//     if (cd.data_transfer_done) {
-							//         SendStatusAndMessage(STATUS_GOOD, 0x00);
-							//         cd.data_transfer_done = FALSE;
-							//         CDIRQCallback(PCECD_Drive_IRQ_DATA_TRANSFER_DONE);
-							//     }
-							// } else {
-							//     cd_bus.DB = din.ReadByte();
-							//     SetREQ(TRUE);
-							//}
-							// }
-							// if (SCSI_REQ && SCSI_ACK) {
-							//puts("REQ and ACK true");
-							//SetREQ(FALSE);
-							// clear_cd_reg_bits(0x00, REQ_BIT);
 						end
 						PHASE_MESSAGE_IN: begin
 							$display ("PHASE_MESSAGE_IN");
-							//cdc_status <= cdc_status | BUSY_BIT | MSG_BIT | CD_BIT | IO_BIT | REQ_BIT;
 							SCSI_BSY <= 1;	// Set BUSY_BIT. [7]
 							SCSI_REQ <= 1;	// Set REQ_BIT. [6]
 							SCSI_MSG <= 1;	// Set MSG_BIT. [5]
 							SCSI_CD <= 1;	// Set CD_BIT.  [4]
 							SCSI_IO <= 1;	// Set IO_BIT.  [3]
-							/*
-							if (SCSI_REQ && SCSI_ACK) begin
-								// Set the REQ low
-								//cdc_status <= cdc_status & ~REQ_BIT;
-								SCSI_REQ <= 0;
-								//CDMessageSent <= true;
-								cd_message_sent <= 1;
-							end
-							if (!SCSI_REQ && !SCSI_ACK && cd_message_sent) begin
-								//CDMessageSent <= false;
-								cd_message_sent <= 0;
-								phase <= PHASE_BUS_FREE;
-								//bus_phase_changed <= 1;
-							end
-							*/
 						end
 					endcase
 				end
@@ -927,7 +842,6 @@ always_ff @(posedge CLOCK) begin
 					case (cd_command_buffer[0])
 					8'h00: begin	// TEST_UNIT_READY (6).
 						message_after_status <= 1'b1;	// Need to confirm for this command.
-						cdc_databus <= 8'h00;
 						phase <= PHASE_STATUS;
 					end
 					
@@ -948,8 +862,8 @@ always_ff @(posedge CLOCK) begin
 							read_state <= read_state + 1;
 						end
 						
-						1: if (sd_ack) begin											// sd_ack should stay high for the whole 512-byte (256-word) transfer.
-							sd_rd <= 1'b0;				// Need to clear sd_rd as soon as sd_ack goes high, apparently.
+						1: if (sd_ack) begin					// sd_ack should stay high during the whole sector transfer.
+							sd_rd <= 1'b0;						// Need to clear sd_rd as soon as sd_ack goes high, apparently.
 							read_state <= read_state + 1;
 						end
 						
@@ -1001,7 +915,6 @@ always_ff @(posedge CLOCK) begin
 						/*
 						data_buffer_pos <= 0;
 						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-						cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 
 						case (audio_state)
 						0: begin
@@ -1033,7 +946,6 @@ always_ff @(posedge CLOCK) begin
 							//else begin
 								data_buffer_pos <= 0;
 								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
 							//end
 						//end
@@ -1044,7 +956,6 @@ always_ff @(posedge CLOCK) begin
 							else begin
 								data_buffer_pos <= 0;
 								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
 							end
 						end
@@ -1055,7 +966,6 @@ always_ff @(posedge CLOCK) begin
 							else begin
 								data_buffer_pos <= 0;
 								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
 							end
 						end
@@ -1066,7 +976,6 @@ always_ff @(posedge CLOCK) begin
 							else begin
 								data_buffer_pos <= 0;
 								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-								cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
 							end
 						end
@@ -1141,7 +1050,6 @@ always_ff @(posedge CLOCK) begin
 					end	// end NEC_GET_DIR_INFO (10).
 					
 					8'hFF: begin	// END_OF_LIST (1) command.
-							cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 							phase <= PHASE_STATUS;
 					end
 					default:;	// Unknown command.
@@ -1168,10 +1076,9 @@ always_ff @(posedge CLOCK) begin
 					end
 					else begin						// Else, done!
 						data_buffer_pos <= 0;
-						cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 						bram_lock[6] <= 1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
 						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
+						phase <= PHASE_STATUS;
 					end
 				end
 				default:;
@@ -1180,14 +1087,14 @@ always_ff @(posedge CLOCK) begin
 
 			
 			if (SCSI_SEL && phase==PHASE_STATUS) begin
+				cdc_databus <= 8'h00;	// Returning 0x00 for the "status" byte atm.
 				case (status_state)
 				0: if (SCSI_ACK) begin
 					SCSI_REQ <= 1'b0;					// Clear the REQ.
 					status_state <= status_state + 1;
 				end
 				1: if (!SCSI_ACK) begin
-					cdc_databus <= 8'h00;		// Returning 0x00 for the "message" byte atm.
-					phase <= PHASE_MESSAGE_IN;	// TESTING! ElectronAsh.
+					phase <= PHASE_MESSAGE_IN;
 				end
 				default:;
 				endcase
@@ -1195,6 +1102,7 @@ always_ff @(posedge CLOCK) begin
 			
 			
 			if (SCSI_SEL && phase==PHASE_MESSAGE_IN) begin
+				cdc_databus <= 8'h00;		// Returning 0x00 for the "message" byte atm. (MAME does this anyway.)
 				case (message_state)
 				0: if (SCSI_ACK) begin
 					SCSI_REQ <= 1'b0;					// Clear the REQ.
