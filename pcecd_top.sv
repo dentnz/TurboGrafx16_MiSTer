@@ -129,11 +129,33 @@ assign cd_audio_r = samp_r;
 
 //TODO: add hps "channel" to read/write from save ram
 
-reg [7:0] cd_command_buffer [0:15]/*synthesis noprune*/;
-reg [3:0] cd_command_buffer_pos = 0;
+reg [7:0] command_buffer [0:15]/*synthesis noprune*/;
+reg [3:0] command_buffer_pos = 0;
 
 
 reg [1:0] stat_counter;	// Kludge.
+
+
+// ADPCM stuff...
+reg adpcm_reset;
+
+reg adpcm_playing;
+reg adpcm_reading;	// "ADPCM RAM to something" flag. Direct reads??
+reg adpcm_writing;	// "CD to ADPCM RAM, DMA running" flag. Probably.
+wire [7:0] adpcm_status = {adpcm_reading, 3'b000, adpcm_playing, adpcm_writing, 1'b0, !adpcm_playing};	// 0x180C.
+
+reg adpcm_repeat;
+
+reg [15:0] adpcm_read_addr;
+reg [15:0] adpcm_write_addr;
+reg [15:0] adpcm_length;
+
+reg [15:0] adpcm_start_addr;
+reg [15:0] adpcm_half_addr;
+reg [15:0] adpcm_end_addr;
+
+wire ADPCM_HALF_FLAG = adpcm_read_addr == (adpcm_start_addr + (adpcm_length >> 1));
+wire ADPCM_FULL_FLAG = adpcm_read_addr == adpcm_end_addr;
 
 
 //wire [7:0] gp_ram_do,adpcm_ram_do,save_ram_do;
@@ -275,7 +297,7 @@ reg [7:0] adpcm_address_low;      // $1808 - ADPCM address (LSB) / CD data
 reg [7:0] adpcm_address_high;     // $1809 - ADPCM address (MSB)
 reg [7:0] adpcm_ram_data;         // $180A - ADPCM RAM data port
 reg [7:0] adpcm_dma_control;      // $180B - ADPCM DMA control
-reg [7:0] adpcm_status;           // $180C - ADPCM status
+//reg [7:0] adpcm_status;           // $180C - ADPCM status
 reg [7:0] adpcm_address_control;  // $180D - ADPCM address control
 reg [7:0] adpcm_playback_rate;    // $180E - ADPCM playback rate
 reg [7:0] adpcm_fade_timer;       // $180F - ADPCM and CD audio fade timer
@@ -341,7 +363,7 @@ reg SCSI_BIT0;
 reg [3:0] packet_bytecount;	// Should probably be a wire [3:0]?
 
 always_ff begin
-	case (cd_command_buffer[0])
+	case (command_buffer[0])
 		8'h00: packet_bytecount <= 6;		// Command = 0x00 TEST_UNIT_READY (6)
 		8'h08: packet_bytecount <= 6;		// Command = 0x08 READ (6)
 		8'hD8: packet_bytecount <= 10;	// Command = 0xD8 NEC_SET_AUDIO_START_POS (10)
@@ -450,37 +472,35 @@ always_ff @(posedge CLOCK) begin
 		adpcm_address_high    <= 8'b0;
 		adpcm_ram_data        <= 8'b0;
 		adpcm_dma_control     <= 8'b0;
-		
-		//adpcm_status          <= 8'b0;
-		adpcm_status          <= 8'h01;	// TESTING !! Bit[3]=ADPCM_PLAYING. Bit[0]=ADPCM_STOPPED.
-		
 		adpcm_address_control <= 8'b0;
 		adpcm_playback_rate   <= 8'b0;
 		adpcm_fade_timer      <= 8'b0;
 
+		adpcm_reset <= 1'b1;	
+		
 		bram_locked <= 1;	// BRAM starts locked, according to MAME.
 		motor_on <= 0;
 		
 		phase         <= PHASE_BUS_FREE;
 		
-		cd_command_buffer_pos <= 4'd0;
+		command_buffer_pos <= 4'd0;
 		
-		cd_command_buffer[0] <= 8'h00;
-		cd_command_buffer[1] <= 8'h11;
-		cd_command_buffer[2] <= 8'h22;
-		cd_command_buffer[3] <= 8'h33;
-		cd_command_buffer[4] <= 8'h44;
-		cd_command_buffer[5] <= 8'h55;
-		cd_command_buffer[6] <= 8'h66;
-		cd_command_buffer[7] <= 8'h77;
-		cd_command_buffer[8] <= 8'h88;
-		cd_command_buffer[9] <= 8'h99;
-		cd_command_buffer[10] <= 8'hAA;
-		cd_command_buffer[11] <= 8'hBB;
-		cd_command_buffer[12] <= 8'hCC;
-		cd_command_buffer[13] <= 8'hDD;
-		cd_command_buffer[14] <= 8'hEE;
-		cd_command_buffer[15] <= 8'hFF;
+		command_buffer[0] <= 8'h00;
+		command_buffer[1] <= 8'h11;
+		command_buffer[2] <= 8'h22;
+		command_buffer[3] <= 8'h33;
+		command_buffer[4] <= 8'h44;
+		command_buffer[5] <= 8'h55;
+		command_buffer[6] <= 8'h66;
+		command_buffer[7] <= 8'h77;
+		command_buffer[8] <= 8'h88;
+		command_buffer[9] <= 8'h99;
+		command_buffer[10] <= 8'hAA;
+		command_buffer[11] <= 8'hBB;
+		command_buffer[12] <= 8'hCC;
+		command_buffer[13] <= 8'hDD;
+		command_buffer[14] <= 8'hEE;
+		command_buffer[15] <= 8'hFF;
 		
 		message_after_status <= 1'b0;
 		
@@ -595,8 +615,6 @@ always_ff @(posedge CLOCK) begin
 						//DOUT <= adpcm_dma_control;
 					end
 					8'h0C: begin	// 0x180C
-						// Kludge...
-						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 						//DOUT <= adpcm_status;
 					end
 					8'h0D: begin	// 0x180D
@@ -640,7 +658,7 @@ always_ff @(posedge CLOCK) begin
 							message_state <= 0;
 							command_state <= 0;
 							data_state <= 0;
-							cd_command_buffer_pos <= 0;
+							command_buffer_pos <= 0;
 							phase <= PHASE_COMMAND;	// ElectronAsh.
 						end
 					end
@@ -682,7 +700,7 @@ always_ff @(posedge CLOCK) begin
 						if (DIN[7]) bram_locked <= 0;	// If the MSB bit of the write data is SET, it should UNLOCK bram.
 					end
 					8'h08: begin	// 0x1808
-						//adpcm_address_low <= DIN;
+						adpcm_address_low <= DIN;
 					end
 					8'h09: begin	// 0x1809
 						adpcm_address_high <= DIN;
@@ -692,12 +710,32 @@ always_ff @(posedge CLOCK) begin
 					end
 					8'h0B: begin	// 0x180B
 						adpcm_dma_control <= DIN;
+
+						if (DIN & 8'h03) begin
+							adpcm_writing <= 1'b1;		// adpcm_status, bit [2] (0x04).
+						end
 					end
 					8'h0C: begin	// 0x180C
-						adpcm_status <= DIN;
+						//adpcm_status <= DIN;
 					end
 					8'h0D: begin	// 0x180D
 						adpcm_address_control <= DIN;
+						
+						if (DIN[7]) adpcm_reset <= 1'b1;
+						
+						if (DIN[6]) begin
+							adpcm_start_addr <= adpcm_read_addr;
+							adpcm_half_addr <= adpcm_read_addr + (adpcm_length >> 1);
+							adpcm_end_addr <= adpcm_read_addr + adpcm_length;
+							bram_lock[3:2] <= 2'b00;	// Clear [3]=ADPCM_FULL_INT_SIG and [2]=ADPCM_HALF_INT_SIG at the start of playing.
+							adpcm_playing <= 1'b1;
+						end
+						else adpcm_playing <= 1'b0;	// TODO: Check if this is a direct bit set / clear, vs a transitional thing. ElectronAsh.
+						
+						if (DIN[5]) adpcm_repeat <= 1'b1; else adpcm_repeat <= 1'b0;
+						if (DIN[4]) adpcm_length <= {adpcm_address_high, adpcm_address_low};
+						if (DIN[3]) adpcm_read_addr <= {adpcm_address_high, adpcm_address_low};
+						if (DIN[1]) adpcm_write_addr <= {adpcm_address_high, adpcm_address_low};
 					end
 					8'h0E: begin	// 0x180E
 						adpcm_playback_rate <= DIN;
@@ -708,11 +746,56 @@ always_ff @(posedge CLOCK) begin
 				endcase
 			end // end wr
 
-			/*
-			if (clear_ack) begin
-				$display("PCECD: Clearing ACK");
+			
+			if (adpcm_reset) begin
+				adpcm_reset <= 1'b0;
+				
+				adpcm_read_addr <= 16'h0000;
+				adpcm_write_addr <= 16'h0000;
+				adpcm_length <= 16'h0000;
+				
+				adpcm_start_addr <= 16'h0000;
+				adpcm_half_addr <= 16'h0000;
+				adpcm_end_addr <= 16'h0000;
+				
+				adpcm_reading <= 1'b0;
+				adpcm_playing <= 1'b0;
+				adpcm_writing <= 1'b0;
 			end
-			*/
+	
+			// Spoofing the ADPCM DMA transfer for now.
+			// This would normally transfer data directly from the CD into the 64KB ADPCM RAM.
+			if (adpcm_writing && command_buffer[0]==8'h08 && phase==PHASE_DATA_IN) begin
+				adpcm_writing <= 1'b0;	// Clear adpcm_status, bit [2] (0x04). DMA done!
+				bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+				phase <= PHASE_STATUS;
+			end
+			
+			if (adpcm_playing) begin
+				if (audio_clk_en && adpcm_read_addr < adpcm_end_addr) begin
+					adpcm_read_addr <= adpcm_read_addr + 1'b1;
+					if (adpcm_read_addr == adpcm_half_addr) bram_lock[2] <= 1'b1;	// Set [3]=ADPCM_HALF_INT_SIG at the halfway point.
+				end
+				else begin
+					bram_lock[3] <= 1'b1;	// Set [3]=ADPCM_FULL_INT_SIG.
+					
+					if (adpcm_repeat) begin
+						// adpcm_start_addr is a BACKUP of the original adpcm_read_addr, so the assignment is swapped here
+						// (as opposed to the write to reg 0xD, which used adpcm_read_addr to assign to these)...
+						adpcm_read_addr <= adpcm_start_addr;
+						//adpcm_half_addr <= adpcm_start_addr + (adpcm_length >> 1);	// Shouldn't need to rewrite these values for a repeat? ElectronAsh.
+						//adpcm_end_addr <= adpcm_start_addr + adpcm_length;
+						
+						bram_lock[3:2] <= 2'b00;	// Clear [3]=ADPCM_FULL_INT_SIG and [2]=ADPCM_HALF_INT_SIG at the start (or repeat) of playing.
+						adpcm_playing <= 1'b1;
+					end
+					else begin
+						adpcm_repeat <= 1'b0;
+						adpcm_playing <= 1'b0;
+					end
+				end				
+			end
+			
 			
 			if (SCSI_RST) begin
 				$display("Performing reset");
@@ -741,7 +824,7 @@ always_ff @(posedge CLOCK) begin
 				int_mask         <= 8'h00;
 				bram_lock             <= 8'h00;
 				motor_on <= 0;
-				cd_command_buffer_pos <= 4'd0;
+				command_buffer_pos <= 4'd0;
 				data_buffer_wr_ena <= 0;
 				data_buffer_wr_force = 0;
 				
@@ -776,7 +859,7 @@ always_ff @(posedge CLOCK) begin
 							SCSI_BIT1 <= 0;
 							SCSI_BIT0 <= 0;
 							bram_lock[5] <= 1'b0;	// Clear the IRQ_TRANSFER_DONE flag!
-							cd_command_buffer_pos <= 0;
+							command_buffer_pos <= 0;
 						end
 						PHASE_COMMAND: begin	
 							$display ("PHASE_COMMAND");
@@ -817,20 +900,20 @@ always_ff @(posedge CLOCK) begin
 			if (SCSI_SEL && phase==PHASE_COMMAND) begin
 				case (command_state)
 				0: if (SCSI_ACK) begin		// The PCE should already have written to CDC_CMD (cdc_databus) before it raises ACK!
-					cd_command_buffer[cd_command_buffer_pos] <= cdc_databus;	// Grab the packet byte!
-					cd_command_buffer_pos <= cd_command_buffer_pos + 1;
+					command_buffer[command_buffer_pos] <= cdc_databus;	// Grab the packet byte!
+					command_buffer_pos <= command_buffer_pos + 1;
 					SCSI_REQ <= 1'b0;					// Clear the REQ.
 					command_state <= command_state + 1;
 				end
 				
 				1: if (!SCSI_ACK) begin
-					if (cd_command_buffer_pos < packet_bytecount) begin	// More bytes left to grab...
+					if (command_buffer_pos < packet_bytecount) begin	// More bytes left to grab...
 						SCSI_REQ <= 1;
 						command_state <= 0;
 					end
 					else begin						// Else...
 						SCSI_REQ <= 0;				// Stop REQuesting bytes!
-						cd_command_buffer_pos <= 0;
+						command_buffer_pos <= 0;
 						read_state <= 0;
 						dir_state <= 0;
 						stat_counter <= 3;
@@ -841,7 +924,7 @@ always_ff @(posedge CLOCK) begin
 				
 				// command_state 2 (parse the command packet itself)...
 				2: begin			
-					case (cd_command_buffer[0])
+					case (command_buffer[0])
 					8'h00: begin	// TEST_UNIT_READY (6).
 						message_after_status <= 1'b1;	// Need to confirm for this command.
 						phase <= PHASE_STATUS;
@@ -850,11 +933,11 @@ always_ff @(posedge CLOCK) begin
 					8'h08: begin	// READ (6).
 						case (read_state)
 						0: begin
-							frame <= {cd_command_buffer[1][4:0], cd_command_buffer[2], cd_command_buffer[3]};
-							frame_count <= cd_command_buffer[4];
+							frame <= {command_buffer[1][4:0], command_buffer[2], command_buffer[3]};
+							frame_count <= command_buffer[4];
 
 							sd_req_type <= 16'h4800;	// Request 2048-byte CD sectors from the HPS.
-							sd_lba <= {cd_command_buffer[1][4:0], cd_command_buffer[2], cd_command_buffer[3]};	// Can now use the raw MSF to request sectors from the HPS. ;)
+							sd_lba <= {command_buffer[1][4:0], command_buffer[2], command_buffer[3]};	// Can now use the raw MSF to request sectors from the HPS. ;)
 							
 							sd_sector_count <= 0;
 							
@@ -985,9 +1068,9 @@ always_ff @(posedge CLOCK) begin
 					8'hDE: begin	// NEC_GET_DIR_INFO (10).
 						case (dir_state)
 						0: begin
-							sd_req_type <= {4'hD, cd_command_buffer[1][3:0], cd_command_buffer[2]};	// Request TOC from HPS.
+							sd_req_type <= {4'hD, command_buffer[1][3:0], command_buffer[2]};	// Request TOC from HPS.
 																															// Upper byte of "sd_req_type" will be 0xD0,0xD1,or 0xD2.
-																															// Lower byte of "sd_req_type" will be cd_command_buffer[2]. ElectronAsh.
+																															// Lower byte of "sd_req_type" will be command_buffer[2]. ElectronAsh.
 							sd_lba <= 0;
 							sd_rd <= 1'b1;
 							
@@ -1034,9 +1117,9 @@ always_ff @(posedge CLOCK) begin
 							end
 							else*/ begin											// Else, done!
 								//sd_rd <= 1'b0;										// Sanity check!
-								if (cd_command_buffer[1]==8'd0) data_buffer_size <= 2;	// TOC0 returns 2 bytes to the PCE.
-								if (cd_command_buffer[1]==8'd1) data_buffer_size <= 3;	// TOC1 returns 3 bytes to the PCE.
-								if (cd_command_buffer[1]==8'd2) data_buffer_size <= 4;	// TOC2 returns 4 bytes to the PCE.
+								if (command_buffer[1]==8'd0) data_buffer_size <= 2;	// TOC0 returns 2 bytes to the PCE.
+								if (command_buffer[1]==8'd1) data_buffer_size <= 3;	// TOC1 returns 3 bytes to the PCE.
+								if (command_buffer[1]==8'd2) data_buffer_size <= 4;	// TOC2 returns 4 bytes to the PCE.
 								data_buffer_wr_ena <= 0;
 								motor_on <= 1;
 								sd_req_type <= 16'h0000;	// Set back to 0, in case other commands need RAW SD / VHD sectors (or TOC info).
