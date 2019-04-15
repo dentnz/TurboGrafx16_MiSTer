@@ -255,11 +255,18 @@ end process;
 
 -- Note: The "page" bits are CPU_A[20:13].
 --
-ROM_SEL_N     <= '0' when CPU_A >= x"000000" and CPU_A <= x"0CFFFF" else '1'; -- ROM : Page $00 - $7F
-SUP_RAM_SEL_N <= '0' when CPU_A >= x"0D0000" and CPU_A <= x"0FFFFF" else '1'; -- Super System Card RAM : Page $68 - $7F. 192KB.
-CD_RAM_SEL_N  <= '0' when CPU_A >= x"100000" and CPU_A <= x"10FFFF" else '1'; -- CD drive RAM : Page $80 - $87. 64KB. ElectronAsh.
-BRM_SEL_N     <= '0' when CPU_A >= x"1EE000" and CPU_A <= x"1EE7FF" else '1'; -- BRM : Page $F7. 2KB
-RAM_SEL_N     <= '0' when CPU_A >= x"1F0000" and CPU_A <= x"1F7FFF" else '1'; -- RAM : Page $F8 - $FB. 32KB
+--ROM_SEL_N     <= '0' when CPU_A >= x"000000" and CPU_A <= x"0CFFFF" else '1'; -- ROM : Page $00 - $7F
+--SUP_RAM_SEL_N <= '0' when CPU_A >= x"0D0000" and CPU_A <= x"0FFFFF" else '1'; -- Super System Card RAM : Page $68 - $7F. 192KB.
+--CD_RAM_SEL_N  <= '0' when CPU_A >= x"100000" and CPU_A <= x"10FFFF" else '1'; -- CD drive RAM : Page $80 - $87. 64KB. ElectronAsh.
+--BRM_SEL_N     <= '0' when CPU_A >= x"1EE000" and CPU_A <= x"1EE7FF" else '1'; -- BRM : Page $F7. 2KB
+--RAM_SEL_N     <= '0' when CPU_A >= x"1F0000" and CPU_A <= x"1F7FFF" else '1'; -- RAM : Page $F8 - $FB. 32KB
+
+ROM_SEL_N     <= '0' when CPU_A(20 downto 13) >= x"00" and CPU_A(20 downto 13) <= x"67" else '1'; -- ROM : Page $00 - $67
+SUP_RAM_SEL_N <= '0' when CPU_A(20 downto 13) >= x"68" and CPU_A(20 downto 13) <= x"7F" else '1'; -- Super System Card RAM : Page $68 - $7F. 192KB.
+CD_RAM_SEL_N  <= '0' when CPU_A(20 downto 13) >= x"80" and CPU_A(20 downto 13) <= x"87" else '1'; -- CD drive RAM : Page $80 - $87. 64KB. ElectronAsh.
+BRM_SEL_N     <= '0' when CPU_A(20 downto 13) >= x"F7" and CPU_A(20 downto 13) <= x"F7" else '1'; -- BRM : Page $F7. 2KB
+RAM_SEL_N     <= '0' when CPU_A(20 downto 13) >= x"F8" and CPU_A(20 downto 13) <= x"FB" else '1'; -- RAM : Page $F8 - $FB. 32KB
+
 
 -- I/O Page $FF...
 VDC_SEL_N <= '0' when CPU_A >= x"1FE000" and CPU_A <= x"1FE3FF" else '1'; -- VDC : $0000 - $03FF (huc6270)
@@ -400,7 +407,7 @@ begin
 end process;
 
 -- CPU data bus
-CPU_DI <=   DI when (ROM_SEL_N and RAM_SEL_N and BRM_SEL_N and VDC_SEL_N and VCE_SEL_N and CDR_SEL_N and CD_RAM_SEL_N) = '0'
+CPU_DI <=   DI when (ROM_SEL_N and RAM_SEL_N and BRM_SEL_N and VDC_SEL_N and VCE_SEL_N and CDR_SEL_N and SUP_RAM_SEL_N and CD_RAM_SEL_N) = '0'
 	else PSG_DO when PSG_SEL_N = '0'
 	else TMR_DO when TMR_SEL_N = '0'
 	else IOP_DO when IOP_SEL_N = '0'

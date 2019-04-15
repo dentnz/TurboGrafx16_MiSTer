@@ -323,8 +323,8 @@ CPU_VDC1_SEL_N <= CPU_VDC_SEL_N or     CPU_A(3) or not CPU_A(4) when SGX = '1' e
 CPU_VPC_SEL_N  <= CPU_VDC_SEL_N or not CPU_A(3) or     CPU_A(4) when SGX = '1' else '1';
 
 -- CPU data bus
-CPU_DI <= ROM_DO  when CPU_RD_N = '0' and CPU_ROM_SEL_N  = '0' -- 0x000000 to 0x0CFFFF -- ROM : Page $00 - $7F
-	  else SUP_DO  when CPU_RD_N = '0' and SUP_RAM_SEL_N  = '0' -- 0x0D0000 to 0x0FFFFF -- Super System Card RAM : Page $68 - $7F. 192KB. ElectronAsh.
+CPU_DI <= SUP_DO  when CPU_RD_N = '0' and SUP_RAM_SEL_N  = '0' -- 0x0D0000 to 0x0FFFFF -- Super System Card RAM : Page $68 - $7F. 192KB. ElectronAsh.
+	  else ROM_DO  when CPU_RD_N = '0' and CPU_ROM_SEL_N  = '0' -- 0x000000 to 0x0CFFFF -- ROM : Page $00 - $7F
 	  else CD_DO   when CPU_RD_N = '0' and CD_RAM_SEL_N   = '0' -- 0x100000 to 0x10FFFF -- CD drive RAM. 64KB : Page $80 - $87. 64KB. ElectronAsh.
 	  else BRM_DO  when CPU_RD_N = '0' and CPU_BRM_SEL_N  = '0' -- 0x1EE000 to 0x1EE7FF -- BRM : Page $F7. 2KB
 	  else RAM_DO  when CPU_RD_N = '0' and CPU_RAM_SEL_N  = '0'	-- 0x1F0000 to 0x1F7FFF -- RAM : Page $F8 - $FB. 32KB
@@ -445,6 +445,12 @@ BRM_WE <= CPU_CLKEN and not CPU_BRM_SEL_N and not CPU_WR_N;
 
 
 SUP_RAM_ADDR <= std_logic_vector(unsigned(CPU_A(17 downto 0)) - "10000000000000000");
+
+
+--SUP_RAM_ADDR <= "00" & CPU_A(15 downto 0) when CPU_A(17 downto 16) = "01"
+--			  else "01" & CPU_A(15 downto 0) when CPU_A(17 downto 16) = "10"
+--			  else "10" & CPU_A(15 downto 0) when CPU_A(17 downto 16) = "11" else CPU_A(17 downto 0);
+
 
 -- Super System Card RAM (ElectronAsh).
 SUPRAM : entity work.supram	-- 192KB

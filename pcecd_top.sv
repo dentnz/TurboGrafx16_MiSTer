@@ -34,8 +34,8 @@ module pcecd_top(
 );
 
 // CD Data buffer...
-reg [14:0] data_buffer_pos;
-reg [14:0] data_buffer_size;
+reg [16:0] data_buffer_pos;	// 128KB for both of these, but the BRAM can only fit 32KB for the buffer itself atm.
+reg [16:0] data_buffer_size;	// (data will wrap, corrupt, but it might help us boot games further during debugging.)
 
 wire [14:0] data_buffer_addr = data_buffer_pos;
 wire [7:0] data_buffer_din = (!data_buffer_addr[0]) ? sd_buff_din[7:0] : sd_buff_din[15:8];
@@ -49,7 +49,7 @@ wire [7:0] data_buffer_dout;
 cd_data_buffer	cd_data_buffer_inst (
 	.clock ( CLOCK ),
 
-	.address ( data_buffer_addr ),	// 64KB.
+	.address ( data_buffer_addr ),	// 32KB.
 	.data ( data_buffer_din ),
 	.wren ( data_buffer_wr ),
 	
@@ -399,7 +399,7 @@ assign IRQ2_ASSERT = (int_mask & bram_lock & 8'h7C);
 // ADPCM_A_HI <= 8'h00;			// 0x1809. ADPCM Addr MSB.
 // ADPCM_RAM_DATA <= 8'h00;	// 0x180A. ADPCM Data port.
 // ADPCM_DMA_CONT <= 8'h00;	// 0x180B. 
-// ADPCM_STAT <= 8'h00;			// 0x180C. [7]=ADPCM is reading data. [3]=ADPCM0 playback (when LOW!). [2]=Pending ADPCM write. [0]=ADPCM1 playback (when LOW!)
+// ADPCM_STAT <= 8'h00;			// 0x180C. [7]=ADPCM is reading data. [3]=ADPCM Playing. [2]=Pending ADPCM write. [0]=ADPCM Stopped.
 // ADPCM_ADDR_CONT <= 8'h00;	// 0x180D. [7]=ADPCM Reset. [6]=ADPCM Play. [5]=ADPCM Repeat. [4]=ADPCM Set Length. [3]=ADPCM Read Addr. [1:0]=ADPCM Write Addr.
 // ADPCM_RATE <= 8'h00;			// 0x180E. ADPCM playback rate.
 // ADPCM_FADE <= 8'h00;			// 0x180F. ADPCM Fade in / out register.
@@ -595,6 +595,8 @@ always_ff @(posedge CLOCK) begin
 						//DOUT <= adpcm_dma_control;
 					end
 					8'h0C: begin	// 0x180C
+						// Kludge...
+						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 						//DOUT <= adpcm_status;
 					end
 					8'h0D: begin	// 0x180D
