@@ -266,12 +266,15 @@ wire [23:0] audio_l, audio_r;
 //assign AUDIO_L = audio_l[23:8];
 //assign AUDIO_R = audio_r[23:8];
 
-assign AUDIO_L = cd_audio_l;
-assign AUDIO_R = cd_audio_r;
+wire signed [16:0] aud_mix_l = {audio_l[23],audio_l[23:8]} + {cd_audio_l[15],cd_audio_l};
+wire signed [16:0] aud_mix_r = {audio_r[23],audio_r[23:8]} + {cd_audio_r[15],cd_audio_r};
 
+assign AUDIO_L = aud_mix_l;
+assign AUDIO_R = aud_mix_r;
 
 assign AUDIO_S = 1;
 assign AUDIO_MIX = 0;
+
 
 wire reset = (RESET | status[0] | buttons[1] | bk_loading);
 wire ce_rom;

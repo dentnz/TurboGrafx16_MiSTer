@@ -158,6 +158,10 @@ wire ADPCM_HALF_FLAG = adpcm_read_addr == (adpcm_start_addr + (adpcm_length >> 1
 wire ADPCM_FULL_FLAG = adpcm_read_addr == adpcm_end_addr;
 
 
+//wire adpcm_address_control = {adpcm_reset, 1'b0, adpcm_repeat, 
+wire [7:0] adpcm_address_control = {adpcm_reset, 1'b0, 1'b0, 5'b00000};
+
+
 //wire [7:0] gp_ram_do,adpcm_ram_do,save_ram_do;
 
 //- 64K general purpose RAM for the CD software to use
@@ -249,6 +253,7 @@ always_comb begin
 	endcase
 end
 
+
 // CD Interface Register 0x00 - CDC status
 	// x--- ---- busy signal
 	// -x-- ---- request signal
@@ -298,7 +303,7 @@ reg [7:0] adpcm_address_high;     // $1809 - ADPCM address (MSB)
 reg [7:0] adpcm_ram_data;         // $180A - ADPCM RAM data port
 reg [7:0] adpcm_dma_control;      // $180B - ADPCM DMA control
 //reg [7:0] adpcm_status;           // $180C - ADPCM status
-reg [7:0] adpcm_address_control;  // $180D - ADPCM address control
+//reg [7:0] adpcm_address_control;  // $180D - ADPCM address control
 reg [7:0] adpcm_playback_rate;    // $180E - ADPCM playback rate
 reg [7:0] adpcm_fade_timer;       // $180F - ADPCM and CD audio fade timer
 
@@ -396,6 +401,16 @@ reg [7:0] frame_count/*synthesis noprune*/;
 reg [7:0] byte_count/*synthesis noprune*/;	// Byte count for TOC stuff / misc.
 
 
+// For CD Audio playback...
+reg [1:0] cdda_status;
+reg [7:0] cdda_play_mode;
+reg [20:0] start_frame;
+reg [20:0] current_frame;
+reg [20:0] end_frame;
+reg end_mark;
+
+
+
 localparam IRQ_TRANSFER_READY     = 8'h40;
 localparam IRQ_TRANSFER_DONE      = 8'h20;
 localparam IRQ_BRAM               = 8'h10; // ???
@@ -472,11 +487,13 @@ always_ff @(posedge CLOCK) begin
 		adpcm_address_high    <= 8'b0;
 		adpcm_ram_data        <= 8'b0;
 		adpcm_dma_control     <= 8'b0;
-		adpcm_address_control <= 8'b0;
+		//adpcm_address_control <= 8'b0;
 		adpcm_playback_rate   <= 8'b0;
 		adpcm_fade_timer      <= 8'b0;
 
 		adpcm_reset <= 1'b1;	
+		
+		cdda_status <= 2'd0;
 		
 		bram_locked <= 1;	// BRAM starts locked, according to MAME.
 		motor_on <= 0;
@@ -719,7 +736,7 @@ always_ff @(posedge CLOCK) begin
 						//adpcm_status <= DIN;
 					end
 					8'h0D: begin	// 0x180D
-						adpcm_address_control <= DIN;
+						//adpcm_address_control <= DIN;
 						
 						if (DIN[7]) adpcm_reset <= 1'b1;
 						
@@ -827,6 +844,8 @@ always_ff @(posedge CLOCK) begin
 				command_buffer_pos <= 4'd0;
 				data_buffer_wr_ena <= 0;
 				data_buffer_wr_force = 0;
+				
+				cdda_status <= 2'd0;	// CDDA Stopped.
 				
 				//bram_lock <= bram_lock & 8'h8F; // CdIoPorts[3] &= 0x8F;
 				bram_lock <= 8'h00;	// TESTING!
@@ -997,34 +1016,31 @@ always_ff @(posedge CLOCK) begin
 					end
 					
 					8'hD8: begin	// NEC_SET_AUDIO_START_POS (10).
-						/*
-						data_buffer_pos <= 0;
-						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-
-						case (audio_state)
-						0: begin
-							sd_req_type <= 16'h5200;	// Request 2352-byte (CD Audio) sector type.
-							//sd_lba <= 0;					// start MSF.
-							sd_lba <= 32'h00017AE1;		// start MSF. (Start of track 14 on Rondo, the in-game theme.)
-							sd_rd <= 1'b1;					// Go!
-							cdda_play <= 1'b1;			// Will only allow writes of CD sector data into the audio FIFO if this is High.
-							audio_state <= audio_state + 1;
+						
+						case (command_buffer[9][7:6])
+						2'b00: begin	// 0x00.
+							start_frame <= {command_buffer[3][4:0], command_buffer[4], command_buffer[5]};
 						end
-						1: begin
-							if (sd_ack) begin
-								sd_rd <= 1'b0;
-								audio_state <= audio_state + 1;
-							end
+						2'b01: begin	// 0x40.
+							start_frame <= command_buffer[4] + 75 * (command_buffer[3] + command_buffer[2] * 60);
 						end
-						2: begin
-							if (!sd_ack && audio_fifo_usedw<800) begin	// "sd_ack" low denotes a sector has transferred.
-								sd_lba <= sd_lba + 1;
-								sd_rd <= 1'b1;
-								audio_state <= 1;	// Loop back!
-							end
+						2'b10: begin	// 0x80.
+							//start_frame <= {command_buffer[3][4:0], command_buffer[4], command_buffer[5]};
 						end
 						endcase
-						*/
+						
+						current_frame <= start_frame;	// This will update on the NEXT clock, but that's OK for now.
+					
+						if (command_buffer[1] & 8'h03) begin	// According to MAME, this mode plays until the end of the DISK.
+							//cdda_status <= 2'd1;
+							audio_state <= 0;
+							cdda_play <= 1'b1;						// Will only allow writes of CD sector data into the audio FIFO if this is High.
+						end
+						else begin										// And this mode plays until the end of the current TRACK.
+							//cdda_status <= 2'd1;
+							audio_state <= 0;
+							cdda_play <= 1'b1;						// Will only allow writes of CD sector data into the audio FIFO if this is High.
+						end
 
 						//if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
 							//if (stat_counter>0) stat_counter <= stat_counter - 1;
@@ -1035,42 +1051,58 @@ always_ff @(posedge CLOCK) begin
 							//end
 						//end
 					end
+					
 					8'hD9: begin	// NEC_SET_AUDIO_STOP_POS (10).
-						if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-							if (stat_counter>0) stat_counter <= stat_counter - 1;
-							else begin
+						case (command_buffer[9][7:6])
+						2'b00: begin	// 0x00.
+							end_frame <= {command_buffer[3][4:0], command_buffer[4], command_buffer[5]};
+						end
+						2'b01: begin	// 0x40.
+							end_frame <= command_buffer[4] + 75 * (command_buffer[3] + command_buffer[2] * 60);
+						end
+						2'b10: begin	// 0x80.
+							//end_frame <= {command_buffer[3][4:0], command_buffer[4], command_buffer[5]};
+						end
+						endcase
+					
+						//if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
+							//if (stat_counter>0) stat_counter <= stat_counter - 1;
+							//else begin
 								data_buffer_pos <= 0;
 								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-							end
-						end
+							//end
+						//end
 					end
+					
 					8'hDA: begin	// NEC_PAUSE (10).
-						if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-							if (stat_counter>0) stat_counter <= stat_counter - 1;
-							else begin
+						//if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
+							//if (stat_counter>0) stat_counter <= stat_counter - 1;
+							//else begin
 								data_buffer_pos <= 0;
 								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-							end
-						end
+							//end
+						//end
 					end
+					
 					8'hDD: begin	// NEC_GET_SUBQ (10).
-						if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-							if (stat_counter>0) stat_counter <= stat_counter - 1;
-							else begin
+						//if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
+							//if (stat_counter>0) stat_counter <= stat_counter - 1;
+							//else begin
 								data_buffer_pos <= 0;
 								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-							end
-						end
+							//end
+						//end
 					end
+					
 					8'hDE: begin	// NEC_GET_DIR_INFO (10).
 						case (dir_state)
 						0: begin
 							sd_req_type <= {4'hD, command_buffer[1][3:0], command_buffer[2]};	// Request TOC from HPS.
-																															// Upper byte of "sd_req_type" will be 0xD0,0xD1,or 0xD2.
-																															// Lower byte of "sd_req_type" will be command_buffer[2]. ElectronAsh.
+																													// Upper byte of "sd_req_type" will be 0xD0,0xD1,or 0xD2.
+																													// Lower byte of "sd_req_type" will be command_buffer[2]. ElectronAsh.
 							sd_lba <= 0;
 							sd_rd <= 1'b1;
 							
@@ -1144,6 +1176,33 @@ always_ff @(posedge CLOCK) begin
 				endcase	// endcase command_state.
 			end	// end  if (SCSI_SEL && phase==PHASE_COMMAND/
 				
+				
+			if (cdda_play && (current_frame < end_frame)) begin
+				case (audio_state)
+				0: begin
+					sd_req_type <= 16'h5200;	// Request 2352-byte (CD Audio) sector type.
+					sd_lba <= current_frame;
+					sd_rd <= 1'b1;					// Go!
+					audio_state <= audio_state + 1;
+				end
+				1: begin
+					if (sd_ack) begin
+						sd_rd <= 1'b0;
+						audio_state <= audio_state + 1;
+					end
+				end
+				2: begin
+					if (!sd_ack && audio_fifo_usedw<800) begin	// "sd_ack" low denotes a sector has transferred.
+						sd_lba <= sd_lba + 1;
+						sd_rd <= 1'b1;
+						audio_state <= 1;	// Loop back!
+					end
+				end
+				endcase
+			end
+			else begin
+				cdda_play <= 1'b0;
+			end
 
 			
 			if (SCSI_SEL && phase==PHASE_DATA_IN) begin
