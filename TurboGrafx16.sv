@@ -143,7 +143,7 @@ parameter CONF_STR1 = {
 	"TGFX16;;",
 	"FS13,PCEBIN,Load TurboGrafx;",
 	"FS13,SGX,Load SuperGrafx;",
-	"S0,ISO,Mount ISO CD Image;",
+	"S0,ISOBIN,Mount ISO CD Image;",
 	"-;"
 };
 parameter CONF_STR2 = {
@@ -269,8 +269,8 @@ wire [23:0] audio_l, audio_r;
 wire signed [16:0] aud_mix_l = {audio_l[23],audio_l[23:8]} + {cd_audio_l[15],cd_audio_l};
 wire signed [16:0] aud_mix_r = {audio_r[23],audio_r[23:8]} + {cd_audio_r[15],cd_audio_r};
 
-assign AUDIO_L = aud_mix_l;
-assign AUDIO_R = aud_mix_r;
+assign AUDIO_L = aud_mix_l[16:1];
+assign AUDIO_R = aud_mix_r[16:1];
 
 assign AUDIO_S = 1;
 assign AUDIO_MIX = 0;
@@ -299,7 +299,7 @@ pce_top #(MAX_SPPL) pce_top
 	.BRM_A(bram_addr),
 	.BRM_DO(bram_q),
 	.BRM_DI(bram_data),
-	.BRM_WE(bram_wr),
+	.BRM_WE(bram_wr_core),
 	
 	.AUD_LDATA(audio_l),
 	.AUD_RDATA(audio_r),
@@ -408,7 +408,9 @@ pcecd_top pcecd_top_inst
 	.img_size( img_size ),
 	
 	.cd_audio_l( cd_audio_l ),
-	.cd_audio_r( cd_audio_r )
+	.cd_audio_r( cd_audio_r ),
+	
+	.bram_locked( bram_locked )
 );
 
 wire [2:0] r,g,b;
@@ -559,9 +561,10 @@ end
 
 wire [10:0] bram_addr;
 wire [7:0] bram_data;
-wire [7:0] bram_q = bram_addr[0] ? bram_qh : bram_ql;
+wire [7:0] bram_q = (bram_locked) ? 8'hff : (bram_addr[0] ? bram_qh : bram_ql);
 wire [7:0] bram_ql,bram_qh;
-wire bram_wr;
+wire bram_wr_core;
+wire bram_wr = (bram_locked) ? 1'b0 : bram_wr_core;
 
 wire format = status[12];
 reg [3:0] defbram = 4'hF;
