@@ -82,7 +82,7 @@ begin
 	vdcsp_ack   <= vdcsp_ackReg;
 	vdcbg_ack   <= vdcbg_ackReg;
 	vdcdmas_ack <= vdcdmas_ackReg;
-
+	
 	ram : entity work.dpram generic map (15,16)
 		port map (
 			clock     => clk,

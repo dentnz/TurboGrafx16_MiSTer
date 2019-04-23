@@ -30,14 +30,16 @@ module pcecd_top(
 	output reg  [15:0]  sd_req_type,
 	
 	output [15:0] cd_audio_l,
-	output [15:0] cd_audio_r
+	output [15:0] cd_audio_r,
+	
+	output reg bram_locked
 );
 
 // CD Data buffer...
 reg [16:0] data_buffer_pos;	// 128KB for both of these, but the BRAM can only fit 32KB for the buffer itself atm.
 reg [16:0] data_buffer_size;	// (data will wrap, corrupt, but it might help us boot games further during debugging.)
 
-wire [14:0] data_buffer_addr = data_buffer_pos;
+wire [15:0] data_buffer_addr = data_buffer_pos;
 wire [7:0] data_buffer_din = (!data_buffer_addr[0]) ? sd_buff_din[7:0] : sd_buff_din[15:8];
 
 wire data_buffer_wr = (sd_buff_wr && data_buffer_wr_ena) | data_buffer_wr_force;
@@ -95,12 +97,12 @@ end
 wire audio_clk_en = (audio_clk_div==0);
 
 
-wire audio_fifo_reset = RESET;
+wire audio_fifo_reset = RESET | !cdda_play;
 
 wire audio_fifo_full;
 wire audio_fifo_wr = !audio_fifo_full && sd_ack && sd_buff_wr && cdda_play;
 
-wire [10:0] audio_fifo_usedw;
+wire [11:0] audio_fifo_usedw;
 
 wire audio_fifo_empty;
 wire audio_fifo_rd = !audio_fifo_empty && audio_clk_en && cdda_play;
@@ -122,15 +124,20 @@ cd_audio_fifo	cd_audio_fifo_inst (
 	.q ( audio_fifo_dout )
 );
 
-assign cd_audio_l = samp_l;
-assign cd_audio_r = samp_r;
+// The CD Audio FIFO should be getting cleared now when cdda_play==0.
+//
+// But this mux is needed anyway, to prevent possible DC offset on the output.
+// (the state of the FIFO output can be undefined when aclr is High.)
+//
+assign cd_audio_l = (cdda_play) ? samp_l : 16'h0000;
+assign cd_audio_r = (cdda_play) ? samp_r : 16'h0000;
 
 
 
 //TODO: add hps "channel" to read/write from save ram
 
-reg [7:0] command_buffer [0:15]/*synthesis noprune*/;
-reg [3:0] command_buffer_pos = 0;
+reg [7:0] cmd_buff [0:9]/*synthesis noprune*/;
+reg [3:0] cmd_buff_pos = 0;
 
 
 reg [1:0] stat_counter;	// Kludge.
@@ -162,51 +169,11 @@ wire ADPCM_FULL_FLAG = adpcm_read_addr == adpcm_end_addr;
 wire [7:0] adpcm_address_control = {adpcm_reset, 1'b0, 1'b0, 5'b00000};
 
 
-//wire [7:0] gp_ram_do,adpcm_ram_do,save_ram_do;
+// Crusty BCD to DEC conversion, but it works.
+wire [7:0] m_dec = (cmd_buff[2][7:4]*10) + cmd_buff[2][3:0];
+wire [7:0] s_dec = (cmd_buff[3][7:4]*10) + cmd_buff[3][3:0];
+wire [7:0] f_dec = (cmd_buff[4][7:4]*10) + cmd_buff[4][3:0];
 
-//- 64K general purpose RAM for the CD software to use
-// generic_spram #(16,8) gp_ram(
-// 	.clk(CLOCK),
-// 	.rst(RESET),
-// 	.ce(1'b1),
-// 	.we(),
-// 	.oe(1'b1),
-// 	.addr(),
-// 	.di(DIN),
-// 	.dout(gp_ram_do)
-// );
-
-//- 64K ADPCM RAM for sample storage
-// generic_spram #(16,8) adpcm_ram(
-// 	.clk(CLOCK),
-// 	.rst(RESET),
-// 	.ce(1'b1),
-// 	.we(),
-// 	.oe(1'b1),
-// 	.addr(),
-// 	.di(DIN),
-// 	.dout(adpcm_ram_do)
-// );
-
- //- 2K battery backed RAM for save game data and high scores
-// generic_tpram #(11,8) save_ram(
-// 	.clk_a(CLOCK),
-// 	.rst_a(RESET),
-// 	.ce_a(1'b1),
-// 	.we_a(),
-// 	.oe_a(1'b1),
-// 	.addr_a(),
-// 	.di_a(DIN),
-// 	.do_a(save_ram_do),
-// 	.clk_b(CLOCK),
-// 	.rst_b(RESET),
-// 	.ce_b(1'b1),
-// 	.we_b(),
-// 	.oe_b(1'b1),
-// 	.addr_b(),
-// 	.di_b(),
-// 	.do_b()
-// );
 
 //TODO: check if registers are needed (things are probably bound to some logic with the cd drive), placeholders for now
 //wire [7:0] cdc_status = {SCSI_BSY, SCSI_REQ, SCSI_MSG, SCSI_CD, SCSI_IO, SCSI_BIT2, SCSI_BIT1, SCSI_BIT0};             // $1800 - CDC status
@@ -232,7 +199,7 @@ always_comb begin
 		8'h00: DOUT <= cdc_status;
 		8'h01: DOUT <= cdc_databus;
 		8'h02: DOUT <= int_mask;		// Or INT_MASK.
-		8'h03: DOUT <= {bram_locked, bram_lock[6:2], left_chan, bram_lock[0]};
+		8'h03: DOUT <= {bram_locked, READY_FLAG, DONE_FLAG, bram_lock[4], ADPCM_FULL_FLAG, ADPCM_HALF_FLAG, left_chan, bram_lock[0]};
 		8'h04: DOUT <= cd_reset;
 		8'h05: DOUT <= convert_pcm;
 		8'h06: DOUT <= pcm_data;
@@ -307,7 +274,7 @@ reg [7:0] adpcm_dma_control;      // $180B - ADPCM DMA control
 reg [7:0] adpcm_playback_rate;    // $180E - ADPCM playback rate
 reg [7:0] adpcm_fade_timer;       // $180F - ADPCM and CD audio fade timer
 
-reg bram_locked;
+//reg bram_locked;
 reg motor_on;
 
 // Phase handling
@@ -323,13 +290,21 @@ reg [2:0] read_state;
 
 reg [2:0] dir_state;
 
-reg [2:0] audio_state;
+reg [1:0] cdda_state;
+
+reg [1:0] cdda_req_type = 0;
+reg [7:0] min;
+reg [7:0] sec;
+reg [7:0] fra;
 
 // Ack handling
 //reg clear_ack = 0;
 
+reg READY_FLAG = 0;
+reg DONE_FLAG = 0;
+
 // SCSI Command Handling
-reg SCSI_RST = 0;
+reg SCSI_RST = 1;
 reg SCSI_ACK = 0;
 reg SCSI_SEL = 0;
 
@@ -368,7 +343,7 @@ reg SCSI_BIT0;
 reg [3:0] packet_bytecount;	// Should probably be a wire [3:0]?
 
 always_ff begin
-	case (command_buffer[0])
+	case (cmd_buff[0])
 		8'h00: packet_bytecount <= 6;		// Command = 0x00 TEST_UNIT_READY (6)
 		8'h08: packet_bytecount <= 6;		// Command = 0x08 READ (6)
 		8'hD8: packet_bytecount <= 10;	// Command = 0xD8 NEC_SET_AUDIO_START_POS (10)
@@ -386,8 +361,6 @@ reg [3:0] status_state;
 reg [3:0] message_state;
 reg [3:0] command_state;
 reg [3:0] data_state;
-
-reg message_after_status = 0;
 
 reg old_ack;
 
@@ -407,8 +380,9 @@ reg [7:0] cdda_play_mode;
 reg [20:0] start_frame;
 reg [20:0] current_frame;
 reg [20:0] end_frame;
+reg [2:0] cdda_mode;
+reg cdda_repeat;
 reg end_mark;
-
 
 
 localparam IRQ_TRANSFER_READY     = 8'h40;
@@ -425,8 +399,8 @@ assign IRQ2_ASSERT = (int_mask & bram_lock & 8'h7C);
 
 // CDC_CMD <= 8'h00;				// 0x1801. Seems to be write-only. Doesn't seem to get handled by MAME pce_cd_device::intf_r?
 
-// INT_MASK <= 8'h00;			// 0x1802. [7]=ACK_FLAG!    [6]=READY_INTMASK. [5]=DONE_INTMASK. [4]=BRAM_INTMASK. [3]=ADPCM_FULL_INTMASK. [2]=ADPCM_HALF_INTMASK. [1]=CDDA_LR_MASK. <- Probably. ElectronAsh.
-// BRAM_LOCK <= 8'h00;			// 0x1803. [7]=BRAM Locked. [6]=READY_INT_SIG. [5]=DONE_INT_SIG. [4]=BRAM_INT_SIG. [3]=ADPCM_FULL_INT_SIG. [2]=ADPCM_HALF_INT_SIG. [1]=CDDA_LR_SIG.
+// INT_MASK <= 8'h00;			// 0x1802. [7]=ACK_FLAG!    [6]=READY_MASK. [5]=DONE_MASK. [4]=BRAM_MASK. [3]=ADPCM_FULL_MASK. [2]=ADPCM_HALF_MASK. [1]=CDDA_LR_MASK.
+// BRAM_LOCK <= 8'h00;			// 0x1803. [7]=BRAM_LOCKED. [6]=READY_FLAG. [5]=DONE_FLAG. [4]=BRAM_FLAG. [3]=ADPCM_FULL_FLAG. [2]=ADPCM_HALF_FLAG. [1]=CDDA_LR_FLAG.
 
 // CD_RESET <= 8'h00;			// 0x1804. [1]=Reset the CD drive. (some docs say bit "2" is reset, but it's bit 1, according to MAME (value & 2)! ElectronAsh.
 // CONV_PCM <= 8'h00;			// 0x1805. CDDA PCM sample value LSB byte.
@@ -456,82 +430,8 @@ reg WR_N_2;
 //TODO: a pcecd_drive module should be probably added
 always_ff @(posedge CLOCK) begin
 	if (RESET) begin
-		//cdc_status            <= 8'b0;
-		SCSI_BSY  <= 1'b0;
-		SCSI_REQ  <= 1'b0;
-		SCSI_MSG  <= 1'b0;
-		SCSI_CD   <= 1'b0;
-		SCSI_IO   <= 1'b0;
-		SCSI_BIT2 <= 1'b0;
-		SCSI_BIT1 <= 1'b0;
-		SCSI_BIT0 <= 1'b0;
-		
-		SCSI_SEL <= 0;
-		
-		SCSI_RST <= 1;		// TESTING. Start off with the "drive" in reset.
-								// The PCE (core) should deassert this on start-up of the SS3 CD BIOS.
-		
-		status_state <= 0;
-		message_state <= 0;
-		command_state <= 0;
-		data_state <= 0;
-		
-		cdc_databus           <= 8'b0;
-		int_mask         		 <= 8'b0;
-		bram_lock             <= 8'b0;
-		cd_reset              <= 8'b0;
-		convert_pcm           <= 8'b0;
-		pcm_data              <= 8'b0;
-		bram_unlock           <= 8'b0;
-		adpcm_address_low     <= 8'b0;
-		adpcm_address_high    <= 8'b0;
-		adpcm_ram_data        <= 8'b0;
-		adpcm_dma_control     <= 8'b0;
-		//adpcm_address_control <= 8'b0;
-		adpcm_playback_rate   <= 8'b0;
-		adpcm_fade_timer      <= 8'b0;
-
-		adpcm_reset <= 1'b1;	
-		
-		cdda_status <= 2'd0;
-		
-		bram_locked <= 1;	// BRAM starts locked, according to MAME.
-		motor_on <= 0;
-		
-		phase         <= PHASE_BUS_FREE;
-		
-		command_buffer_pos <= 4'd0;
-		
-		command_buffer[0] <= 8'h00;
-		command_buffer[1] <= 8'h11;
-		command_buffer[2] <= 8'h22;
-		command_buffer[3] <= 8'h33;
-		command_buffer[4] <= 8'h44;
-		command_buffer[5] <= 8'h55;
-		command_buffer[6] <= 8'h66;
-		command_buffer[7] <= 8'h77;
-		command_buffer[8] <= 8'h88;
-		command_buffer[9] <= 8'h99;
-		command_buffer[10] <= 8'hAA;
-		command_buffer[11] <= 8'hBB;
-		command_buffer[12] <= 8'hCC;
-		command_buffer[13] <= 8'hDD;
-		command_buffer[14] <= 8'hEE;
-		command_buffer[15] <= 8'hFF;
-		
-		message_after_status <= 1'b0;
-		
-		data_buffer_size <= 14'd0;
-		data_buffer_pos <= 0;
-		data_buffer_wr_ena <= 0;
-		data_buffer_wr_force = 0;
-		
-		read_state <= 0;
-		dir_state <= 0;
-		audio_state <= 0;
-			
-		sd_rd <= 1'b0;
-		//sd_wr <= 1'b0;
+		// Start off with the "drive" in reset.
+		SCSI_RST <= 1;	// The PCE (core) should deassert this on start-up of the SS3 CD BIOS.
 		
 		old_phase <= ~phase;	// ElectronAsh. (force a phase update after reset).
 	end else begin
@@ -554,14 +454,12 @@ always_ff @(posedge CLOCK) begin
 			end
 			else begin
 				data_buffer_pos <= 0;
-				bram_lock[6] <= 1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
-				bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+				READY_FLAG <=1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
+				DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 				phase <= PHASE_STATUS;
 			end
 		end
 			
-	
-		//if (!CS_N) begin
 		begin
 			if (!CS_N & CDR_RD_N_FALLING) begin
 				case (ADDR[7:0])
@@ -591,9 +489,9 @@ always_ff @(posedge CLOCK) begin
 						bram_locked <= 1;					// A read from this reg LOCKs BRAM access!
 						//bram_lock <= (bram_lock & 8'h6E) | bram_locked<<7 | motor_on<<4 | !bram_lock[1]<<1;
 						//bram_lock[7] <= bram_locked;	// [7]=BRAM Locked.
-						//bram_lock[6] <= bram_lock[6];	// [6]=READY_INT_SIG.
-						//bram_lock[5] <= bram_lock[5];	// [5]=DONE_INT_SIG.
-						//bram_lock[5] <= 1'b1;	// [5]=DONE_INT_SIG. TESTING !!!!! PCE needs to see this set after a CDDA Play command (and probably others). ElectronAsh.
+						//READY_FLAG <=bram_lock[6];	// [6]=READY_INT_SIG.
+						//DONE_FLAG <= bram_lock[5];	// [5]=DONE_INT_SIG.
+						//DONE_FLAG <= 1'b1;	// [5]=DONE_INT_SIG. TESTING !!!!! PCE needs to see this set after a CDDA Play command (and probably others). ElectronAsh.
 						//bram_lock[4] <= motor_on;		// [4]=BRAM_INT_SIG.
 						//bram_lock[3] <= bram_lock[3];	// [3]=ADPCM_FULL_INT_SIG.
 						//bram_lock[2] <= bram_lock[2];	// [2]=ADPCM_HALF_INT_SIG.
@@ -659,8 +557,8 @@ always_ff @(posedge CLOCK) begin
 
 						// Clear IRQ bits [7:5].
 						//bram_lock[7] <= 1'b0;	//	 Clear [7]=bram_locked, but not?
-						bram_lock[6] <= 1'b0;	//	 Clear [6]=READY_INT_SIG.
-						bram_lock[5] <= 1'b0;	//	 Clear [5]=DONE_INT_SIG.
+						READY_FLAG <=1'b0;	//	 Clear [6]=READY_INT_SIG.
+						DONE_FLAG <= 1'b0;	//	 Clear [5]=DONE_INT_SIG.
 						
 						// The MAME code normally assumes there is only ONE drive on the bus.
 						// So no real point checking to see if the ID matches before setting SCSI_SEL.
@@ -675,7 +573,7 @@ always_ff @(posedge CLOCK) begin
 							message_state <= 0;
 							command_state <= 0;
 							data_state <= 0;
-							command_buffer_pos <= 0;
+							cmd_buff_pos <= 0;
 							phase <= PHASE_COMMAND;	// ElectronAsh.
 						end
 					end
@@ -688,7 +586,7 @@ always_ff @(posedge CLOCK) begin
 							SCSI_BIT1 <= 0;
 							SCSI_BIT0 <= 0;
 							SCSI_SEL <= 0;					// Deselect!
-							bram_lock[5] <= 1'b0;		// Clear the IRQ_TRANSFER_DONE flag!
+							DONE_FLAG <= 1'b0;		// Clear the IRQ_TRANSFER_DONE flag!
 							phase <= PHASE_BUS_FREE;	// ElectronAsh.
 						end
 					end
@@ -744,7 +642,7 @@ always_ff @(posedge CLOCK) begin
 							adpcm_start_addr <= adpcm_read_addr;
 							adpcm_half_addr <= adpcm_read_addr + (adpcm_length >> 1);
 							adpcm_end_addr <= adpcm_read_addr + adpcm_length;
-							bram_lock[3:2] <= 2'b00;	// Clear [3]=ADPCM_FULL_INT_SIG and [2]=ADPCM_HALF_INT_SIG at the start of playing.
+							//bram_lock[3:2] <= 2'b00;	// Clear [3]=ADPCM_FULL_INT_SIG and [2]=ADPCM_HALF_INT_SIG at the start of playing. No longer need this. using ADPCM_HALF_FLAG assign etc.
 							adpcm_playing <= 1'b1;
 						end
 						else adpcm_playing <= 1'b0;	// TODO: Check if this is a direct bit set / clear, vs a transitional thing. ElectronAsh.
@@ -763,57 +661,7 @@ always_ff @(posedge CLOCK) begin
 				endcase
 			end // end wr
 
-			
-			if (adpcm_reset) begin
-				adpcm_reset <= 1'b0;
-				
-				adpcm_read_addr <= 16'h0000;
-				adpcm_write_addr <= 16'h0000;
-				adpcm_length <= 16'h0000;
-				
-				adpcm_start_addr <= 16'h0000;
-				adpcm_half_addr <= 16'h0000;
-				adpcm_end_addr <= 16'h0000;
-				
-				adpcm_reading <= 1'b0;
-				adpcm_playing <= 1'b0;
-				adpcm_writing <= 1'b0;
-			end
-	
-			// Spoofing the ADPCM DMA transfer for now.
-			// This would normally transfer data directly from the CD into the 64KB ADPCM RAM.
-			if (adpcm_writing && command_buffer[0]==8'h08 && phase==PHASE_DATA_IN) begin
-				adpcm_writing <= 1'b0;	// Clear adpcm_status, bit [2] (0x04). DMA done!
-				bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-				phase <= PHASE_STATUS;
-			end
-			
-			if (adpcm_playing) begin
-				if (audio_clk_en && adpcm_read_addr < adpcm_end_addr) begin
-					adpcm_read_addr <= adpcm_read_addr + 1'b1;
-					if (adpcm_read_addr == adpcm_half_addr) bram_lock[2] <= 1'b1;	// Set [3]=ADPCM_HALF_INT_SIG at the halfway point.
-				end
-				else begin
-					bram_lock[3] <= 1'b1;	// Set [3]=ADPCM_FULL_INT_SIG.
-					
-					if (adpcm_repeat) begin
-						// adpcm_start_addr is a BACKUP of the original adpcm_read_addr, so the assignment is swapped here
-						// (as opposed to the write to reg 0xD, which used adpcm_read_addr to assign to these)...
-						adpcm_read_addr <= adpcm_start_addr;
-						//adpcm_half_addr <= adpcm_start_addr + (adpcm_length >> 1);	// Shouldn't need to rewrite these values for a repeat? ElectronAsh.
-						//adpcm_end_addr <= adpcm_start_addr + adpcm_length;
-						
-						bram_lock[3:2] <= 2'b00;	// Clear [3]=ADPCM_FULL_INT_SIG and [2]=ADPCM_HALF_INT_SIG at the start (or repeat) of playing.
-						adpcm_playing <= 1'b1;
-					end
-					else begin
-						adpcm_repeat <= 1'b0;
-						adpcm_playing <= 1'b0;
-					end
-				end				
-			end
-			
-			
+
 			if (SCSI_RST) begin
 				$display("Performing reset");
 				//cdc_status <= 0;
@@ -827,43 +675,190 @@ always_ff @(posedge CLOCK) begin
 				SCSI_BIT0 <= 1'b0;
 				
 				SCSI_ACK <= 1'b0;
-				
 				SCSI_SEL <= 0;					// Deselect.
+				
+				READY_FLAG <= 0;
+				DONE_FLAG <= 0;
+				
+				cdc_databus           <= 8'b0;
+				int_mask         		 <= 8'b0;
+				bram_lock             <= 8'b0;
+				cd_reset              <= 8'b0;
+				convert_pcm           <= 8'b0;
+				pcm_data              <= 8'b0;
+				bram_unlock           <= 8'b0;
+				adpcm_address_low     <= 8'b0;
+				adpcm_address_high    <= 8'b0;
+				adpcm_ram_data        <= 8'b0;
+				adpcm_dma_control     <= 8'b0;
+				//adpcm_address_control <= 8'b0;
+				adpcm_playback_rate   <= 8'b0;
+				adpcm_fade_timer      <= 8'b0;
+				
 				status_state <= 0;
 				message_state <= 0;
 				command_state <= 0;
 				dir_state <= 0;
 				data_state <= 0;
-				message_after_status <= 1'b0;
 				data_buffer_size <= 14'd0;
 				data_buffer_pos <= 0;
 				read_state <= 0;
 				int_mask         <= 8'h00;
-				bram_lock             <= 8'h00;
+				bram_lock        <= 8'h00;
 				motor_on <= 0;
-				command_buffer_pos <= 4'd0;
+				cmd_buff_pos <= 4'd0;
 				data_buffer_wr_ena <= 0;
 				data_buffer_wr_force = 0;
 				
-				cdda_status <= 2'd0;	// CDDA Stopped.
+				cdda_play <= 1'b0;
+				cdda_repeat <= 1'b0;
+				cdda_state <= 2'd0;
+				cdda_status <= 2'd0;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
 				
-				//bram_lock <= bram_lock & 8'h8F; // CdIoPorts[3] &= 0x8F;
+				cdda_req_type = 0;
+				
+				adpcm_reset <= 1'b1;
+				
 				bram_lock <= 8'h00;	// TESTING!
 				
-				bram_locked <= 0;	// TODO - Check! ElectronAsh.
-				//IRQ2_ASSERT <= (int_mask & bram_lock & 8'h7C) != 0; // RefreshIRQ2();
-				//$display("Write to 0x4. IRQ2_ASSERT will be: 0x%h", (int_mask & bram_lock & 8'h7C) != 0);
-				phase <= PHASE_BUS_FREE;
+				bram_locked <= 1;	// BRAM starts locked, according to MAME.
+				motor_on <= 0;
+
+				// Clear the command buffer				
+				cmd_buff[0] <= 8'h00;
+				cmd_buff[1] <= 8'h00;
+				cmd_buff[2] <= 8'h00;
+				cmd_buff[3] <= 8'h00;
+				cmd_buff[4] <= 8'h00;
+				cmd_buff[5] <= 8'h00;
+				cmd_buff[6] <= 8'h00;
+				cmd_buff[7] <= 8'h00;
+				cmd_buff[8] <= 8'h00;
+				cmd_buff[9] <= 8'h00;
 				
-				// Clear the command buffer
+				data_buffer_size <= 14'd0;
+				data_buffer_pos <= 0;
+				data_buffer_wr_ena <= 0;
+				data_buffer_wr_force = 0;
+				
+				read_state <= 0;
+				dir_state <= 0;
+					
+				sd_rd <= 1'b0;
+				//sd_wr <= 1'b0;
+		
+
 				// Stop all reads
 				// Stop all audio
-				//phase <= PHASE_BUS_FREE;
-				//bus_phase_changed <= 1;
+				phase <= PHASE_BUS_FREE;
 				
 				old_phase <= ~phase;	// ElectronAsh. (force a phase update after reset).
 			end
 			else begin	// SCSI_RST is Low (run)...
+			
+				if (adpcm_reset) begin
+					adpcm_reset <= 1'b0;
+					
+					adpcm_read_addr <= 16'h0000;
+					adpcm_write_addr <= 16'h0000;
+					adpcm_length <= 16'h0000;
+					
+					adpcm_start_addr <= 16'h0000;
+					adpcm_half_addr <= 16'h0000;
+					adpcm_end_addr <= 16'h0000;
+					
+					adpcm_reading <= 1'b0;
+					adpcm_playing <= 1'b0;
+					adpcm_writing <= 1'b0;
+				end
+		
+				// Spoofing the ADPCM DMA transfer for now.
+				// This would normally transfer data directly from the CD into the 64KB ADPCM RAM.
+				if (adpcm_writing && cmd_buff[0]==8'h08 && phase==PHASE_DATA_IN) begin
+					adpcm_writing <= 1'b0;	// Clear adpcm_status, bit [2] (0x04). DMA done!
+					DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+					phase <= PHASE_STATUS;
+				end
+				
+				if (adpcm_playing) begin
+					if (audio_clk_en && adpcm_read_addr < adpcm_end_addr) begin
+						adpcm_read_addr <= adpcm_read_addr + 1'b1;
+						//if (adpcm_read_addr == adpcm_half_addr) bram_lock[2] <= 1'b1;	// Set [3]=ADPCM_HALF_INT_SIG at the halfway point. No longer needed.
+					end
+					else begin
+						//bram_lock[3] <= 1'b1;	// Set [3]=ADPCM_FULL_INT_SIG. No longer needed.
+						
+						if (adpcm_repeat) begin
+							// adpcm_start_addr is a BACKUP of the original adpcm_read_addr, so the assignment is swapped here
+							// (as opposed to the write to reg 0xD, which used adpcm_read_addr to assign to these)...
+							adpcm_read_addr <= adpcm_start_addr;
+							//adpcm_half_addr <= adpcm_start_addr + (adpcm_length >> 1);	// Shouldn't need to rewrite these values for a repeat? ElectronAsh.
+							//adpcm_end_addr <= adpcm_start_addr + adpcm_length;
+							
+							//bram_lock[3:2] <= 2'b00;	// Clear [3]=ADPCM_FULL_INT_SIG and [2]=ADPCM_HALF_INT_SIG at the start (or repeat) of playing. No longer needed.
+							adpcm_playing <= 1'b1;
+						end
+						else begin
+							adpcm_repeat <= 1'b0;
+							adpcm_playing <= 1'b0;
+						end
+					end				
+				end
+				
+				
+				case (cdda_state)
+				0: if (cdda_play) begin
+					cdda_status <= 2'd1;			// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
+					
+					case (cdda_req_type)
+						0: sd_req_type <= 16'h5200;	// Request 2352-byte (CD Audio) sector type. LBA.
+						1: sd_req_type <= 16'h5201;	// Request 2352-byte (CD Audio) sector type. MSF.
+						2: sd_req_type <= 16'h5202;	// Request 2352-byte (CD Audio) sector type. TRACK.
+					endcase
+
+					sd_lba <= current_frame;
+					sd_rd <= 1'b1;					// Go!
+					cdda_state <= cdda_state + 1;
+				end
+				1: begin
+					if (sd_ack) begin
+						sd_rd <= 1'b0;
+						cdda_state <= cdda_state + 1;
+					end
+				end
+				2: begin
+					// "sd_ack" low denotes a sector has just transferred.
+					if (!sd_ack && audio_fifo_usedw<1700) begin
+						if (current_frame < end_frame && cdda_play) begin	// Check if we've reached end_frame yet (and cdda_play is still set).
+							current_frame <= current_frame + 1;
+							sd_lba <= sd_lba + 1;
+							sd_rd <= 1'b1;
+							cdda_state <= 1;			// ..No, Loop back, to fetch another sector!
+						end
+						else begin
+							case (cdda_mode)
+							1: begin			// Repeat.
+								current_frame <= start_frame;	// Set back to the start frame.
+								cdda_play <= 1'b1;	// Keep playing (don't really need to set this again).
+								cdda_state <= 0;
+							end
+							2: begin			// IRQ when finished.
+								cdda_status <= 2'd0;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
+								cdda_play <= 1'b0;
+								DONE_FLAG <= 1'b1;	// This mode sets the IRQ_TRANSFER_DONE flag at the end of CDDA playback. (MAME).
+							end
+							3: begin			// Play without repeat (STOP).
+								cdda_status <= 2'd0;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
+								cdda_play <= 1'b0;
+								cdda_state <= 0;		// Back to idle state. (won't restart unless cdda_play is set again.)
+							end
+							endcase
+						end
+					end
+				end
+				default:;
+				endcase
+				
 				
 				if (phase!=old_phase) begin
 					case (phase)
@@ -877,8 +872,8 @@ always_ff @(posedge CLOCK) begin
 							SCSI_BIT2 <= 0;	// Deselection seems to clear the lower bits (SCSI ID?) as well. ElectronAsh.
 							SCSI_BIT1 <= 0;
 							SCSI_BIT0 <= 0;
-							bram_lock[5] <= 1'b0;	// Clear the IRQ_TRANSFER_DONE flag!
-							command_buffer_pos <= 0;
+							DONE_FLAG <= 1'b0;	// Clear the IRQ_TRANSFER_DONE flag!
+							cmd_buff_pos <= 0;
 						end
 						PHASE_COMMAND: begin	
 							$display ("PHASE_COMMAND");
@@ -919,44 +914,45 @@ always_ff @(posedge CLOCK) begin
 			if (SCSI_SEL && phase==PHASE_COMMAND) begin
 				case (command_state)
 				0: if (SCSI_ACK) begin		// The PCE should already have written to CDC_CMD (cdc_databus) before it raises ACK!
-					command_buffer[command_buffer_pos] <= cdc_databus;	// Grab the packet byte!
-					command_buffer_pos <= command_buffer_pos + 1;
+					cmd_buff[cmd_buff_pos] <= cdc_databus;	// Grab the packet byte!
+					cmd_buff_pos <= cmd_buff_pos + 1;
 					SCSI_REQ <= 1'b0;					// Clear the REQ.
 					command_state <= command_state + 1;
 				end
 				
 				1: if (!SCSI_ACK) begin
-					if (command_buffer_pos < packet_bytecount) begin	// More bytes left to grab...
+					if (cmd_buff_pos < packet_bytecount) begin	// More bytes left to grab...
 						SCSI_REQ <= 1;
 						command_state <= 0;
 					end
 					else begin						// Else...
 						SCSI_REQ <= 0;				// Stop REQuesting bytes!
-						command_buffer_pos <= 0;
+						cmd_buff_pos <= 0;
 						read_state <= 0;
 						dir_state <= 0;
 						stat_counter <= 3;
-						audio_state <= 0;
+						cdda_state <= 0;
 						command_state <= command_state + 1;
 					end
 				end
 				
 				// command_state 2 (parse the command packet itself)...
 				2: begin			
-					case (command_buffer[0])
+					case (cmd_buff[0])
 					8'h00: begin	// TEST_UNIT_READY (6).
-						message_after_status <= 1'b1;	// Need to confirm for this command.
 						phase <= PHASE_STATUS;
 					end
 					
 					8'h08: begin	// READ (6).
 						case (read_state)
 						0: begin
-							frame <= {command_buffer[1][4:0], command_buffer[2], command_buffer[3]};
-							frame_count <= command_buffer[4];
+							cdda_play <= 1'b0;		// STOP CDDA Playback immediately!
+						
+							frame <= {cmd_buff[1][4:0], cmd_buff[2], cmd_buff[3]};
+							frame_count <= cmd_buff[4];
 
 							sd_req_type <= 16'h4800;	// Request 2048-byte CD sectors from the HPS.
-							sd_lba <= {command_buffer[1][4:0], command_buffer[2], command_buffer[3]};	// Can now use the raw MSF to request sectors from the HPS. ;)
+							sd_lba <= {cmd_buff[1][4:0], cmd_buff[2], cmd_buff[3]};
 							
 							sd_sector_count <= 0;
 							
@@ -1007,7 +1003,7 @@ always_ff @(posedge CLOCK) begin
 								//sd_lba <= 0;					// Sanity check.
 								//sd_req_type <= 16'h0000;	// Set back to 0, in case other commands need RAW SD / VHD sectors (or TOC info).
 								data_buffer_pos <= 0;
-								bram_lock[6] <= 1'b1;	// Set IRQ_TRANSFER_READY flag!
+								READY_FLAG <=1'b1;	// Set IRQ_TRANSFER_READY flag!
 								phase <= PHASE_DATA_IN;
 							end
 						end
@@ -1016,93 +1012,108 @@ always_ff @(posedge CLOCK) begin
 					end
 					
 					8'hD8: begin	// NEC_SET_AUDIO_START_POS (10).
-						
-						case (command_buffer[9][7:6])
-						2'b00: begin	// 0x00.
-							start_frame <= {command_buffer[3][4:0], command_buffer[4], command_buffer[5]};
+						case (cmd_buff[9][7:6])
+						2'b00: begin	// 0x00. LBA.
+							start_frame <= {cmd_buff[3][4:0], cmd_buff[4], cmd_buff[5]};
+							current_frame <= {cmd_buff[3][4:0], cmd_buff[4], cmd_buff[5]};
+							cdda_req_type = 0;
 						end
-						2'b01: begin	// 0x40.
-							start_frame <= command_buffer[4] + 75 * (command_buffer[3] + command_buffer[2] * 60);
+						2'b01: begin	// 0x40. MSF. (BCD). m=buff[2]. s=buff[3]. f=buff[4].
+							//current_frame <= {cmd_buff[2], cmd_buff[3], cmd_buff[4]};
+							//current_frame <= bcd2dec(cmd_buff[4]) + (75 * (bcd2dec(cmd_buff[3]) + bcd2dec(cmd_buff[2]) * 60));
+							//cdda_req_type = 1;	// MSF.
+							start_frame <= (((m_dec*60) + s_dec) * 75)  + f_dec;
+							current_frame <= (((m_dec*60) + s_dec) * 75)  + f_dec;
+							cdda_req_type = 0;	// Frame.
 						end
-						2'b10: begin	// 0x80.
-							//start_frame <= {command_buffer[3][4:0], command_buffer[4], command_buffer[5]};
+						2'b10: begin	// 0x80. Track number in (BCD??) cmd_buff[2].
+							//start_frame <= cmd_buff[2];
+							current_frame <= cmd_buff[2];
+							cdda_req_type = 2;
 						end
+						default:;
 						endcase
 						
-						current_frame <= start_frame;	// This will update on the NEXT clock, but that's OK for now.
-					
-						if (command_buffer[1] & 8'h03) begin	// According to MAME, this mode plays until the end of the DISK.
-							//cdda_status <= 2'd1;
-							audio_state <= 0;
-							cdda_play <= 1'b1;						// Will only allow writes of CD sector data into the audio FIFO if this is High.
+						if (cmd_buff[1] & 8'h03) begin	// According to MAME, this mode plays until the end of the DISK.
+							cdda_status <= 2'd1;		// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
+							cdda_state <= 0;
+							cdda_mode <= cmd_buff[1][1:0];	// Mode 2 sets IRQ at the end. (MAME).
+							cdda_play <= 1'b1;
 						end
 						else begin										// And this mode plays until the end of the current TRACK.
-							//cdda_status <= 2'd1;
-							audio_state <= 0;
-							cdda_play <= 1'b1;						// Will only allow writes of CD sector data into the audio FIFO if this is High.
+							cdda_status <= 2'd1;		// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
+							cdda_state <= 0;
+							cdda_mode <= 2'd3;
+							cdda_play <= 1'b1;
 						end
 
-						//if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-							//if (stat_counter>0) stat_counter <= stat_counter - 1;
-							//else begin
-								data_buffer_pos <= 0;
-								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-							//end
-						//end
+						data_buffer_pos <= 0;
+						DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+						phase <= PHASE_STATUS;
 					end
 					
 					8'hD9: begin	// NEC_SET_AUDIO_STOP_POS (10).
-						case (command_buffer[9][7:6])
-						2'b00: begin	// 0x00.
-							end_frame <= {command_buffer[3][4:0], command_buffer[4], command_buffer[5]};
+						case (cmd_buff[9][7:6])
+						2'b00: begin	// 0x00. LBA.
+							end_frame <= {cmd_buff[3][4:0], cmd_buff[4], cmd_buff[5]};
+							cdda_req_type = 0;
 						end
-						2'b01: begin	// 0x40.
-							end_frame <= command_buffer[4] + 75 * (command_buffer[3] + command_buffer[2] * 60);
+						2'b01: begin	// 0x40. MSF. (BCD). m=buff[2]. s=buff[3]. f=buff[4].
+							//end_frame <= bcd2dec(cmd_buff[4]) + (75 * (bcd2dec(cmd_buff[3]) + bcd2dec(cmd_buff[2]) * 60));
+							//cdda_req_type = 1;	// MSF.
+							end_frame <= (((m_dec*60) + s_dec) * 75)  + f_dec;
+							cdda_req_type = 0;	// Frame.
 						end
-						2'b10: begin	// 0x80.
-							//end_frame <= {command_buffer[3][4:0], command_buffer[4], command_buffer[5]};
+						2'b10: begin	// 0x80. Track number (BCD??) in cmd_buff[2].
+							end_frame <= cmd_buff[2];
+							cdda_req_type = 2;
 						end
 						endcase
+						
+						if (cmd_buff[1] & 8'h03) begin
+							cdda_mode <= cmd_buff[1][1:0]; // mode 2 sets IRQ at end
+						
+							if (cdda_status==2'd2) begin
+								cdda_status <= 2'd2;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
+								cdda_play <= 1'b0;	// PAUSE audio!
+								cdda_state <= 0;
+							end
+							else begin
+								cdda_status <= 2'd1;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
+								cdda_play <= 1'b1;
+								cdda_state <= 0;
+							end
+						end
+						else begin
+							//end_frame <= last_frame;	// TODO.
+							cdda_status <= 2'd0;		// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
+							cdda_play <= 1'b0;
+							cdda_state <= 0;
+						end
 					
-						//if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-							//if (stat_counter>0) stat_counter <= stat_counter - 1;
-							//else begin
-								data_buffer_pos <= 0;
-								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-							//end
-						//end
+						data_buffer_pos <= 0;
+						DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+						phase <= PHASE_STATUS;
 					end
 					
 					8'hDA: begin	// NEC_PAUSE (10).
-						//if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-							//if (stat_counter>0) stat_counter <= stat_counter - 1;
-							//else begin
-								data_buffer_pos <= 0;
-								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-							//end
-						//end
+						data_buffer_pos <= 0;
+						DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
 					end
 					
 					8'hDD: begin	// NEC_GET_SUBQ (10).
-						//if (!CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h00) begin
-							//if (stat_counter>0) stat_counter <= stat_counter - 1;
-							//else begin
-								data_buffer_pos <= 0;
-								bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-								phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
-							//end
-						//end
+						data_buffer_pos <= 0;
+						DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
 					end
 					
 					8'hDE: begin	// NEC_GET_DIR_INFO (10).
 						case (dir_state)
 						0: begin
-							sd_req_type <= {4'hD, command_buffer[1][3:0], command_buffer[2]};	// Request TOC from HPS.
+							sd_req_type <= {4'hD, cmd_buff[1][3:0], cmd_buff[2]};	// Request TOC from HPS.
 																													// Upper byte of "sd_req_type" will be 0xD0,0xD1,or 0xD2.
-																													// Lower byte of "sd_req_type" will be command_buffer[2]. ElectronAsh.
+																													// Lower byte of "sd_req_type" will be cmd_buff[2]. ElectronAsh.
 							sd_lba <= 0;
 							sd_rd <= 1'b1;
 							
@@ -1149,14 +1160,14 @@ always_ff @(posedge CLOCK) begin
 							end
 							else*/ begin											// Else, done!
 								//sd_rd <= 1'b0;										// Sanity check!
-								if (command_buffer[1]==8'd0) data_buffer_size <= 2;	// TOC0 returns 2 bytes to the PCE.
-								if (command_buffer[1]==8'd1) data_buffer_size <= 3;	// TOC1 returns 3 bytes to the PCE.
-								if (command_buffer[1]==8'd2) data_buffer_size <= 4;	// TOC2 returns 4 bytes to the PCE.
+								if (cmd_buff[1]==8'd0) data_buffer_size <= 2;	// TOC0 returns 2 bytes to the PCE.
+								if (cmd_buff[1]==8'd1) data_buffer_size <= 3;	// TOC1 returns 3 bytes to the PCE.
+								if (cmd_buff[1]==8'd2) data_buffer_size <= 4;	// TOC2 returns 4 bytes to the PCE.
 								data_buffer_wr_ena <= 0;
 								motor_on <= 1;
 								sd_req_type <= 16'h0000;	// Set back to 0, in case other commands need RAW SD / VHD sectors (or TOC info).
 								data_buffer_pos <= 0;
-								bram_lock[6] <= 1'b1;		// Set IRQ_TRANSFER_READY flag!
+								READY_FLAG <=1'b1;		// Set IRQ_TRANSFER_READY flag!
 								phase <= PHASE_DATA_IN;
 							end
 						end
@@ -1175,35 +1186,7 @@ always_ff @(posedge CLOCK) begin
 				default:;
 				endcase	// endcase command_state.
 			end	// end  if (SCSI_SEL && phase==PHASE_COMMAND/
-				
-				
-			if (cdda_play && (current_frame < end_frame)) begin
-				case (audio_state)
-				0: begin
-					sd_req_type <= 16'h5200;	// Request 2352-byte (CD Audio) sector type.
-					sd_lba <= current_frame;
-					sd_rd <= 1'b1;					// Go!
-					audio_state <= audio_state + 1;
-				end
-				1: begin
-					if (sd_ack) begin
-						sd_rd <= 1'b0;
-						audio_state <= audio_state + 1;
-					end
-				end
-				2: begin
-					if (!sd_ack && audio_fifo_usedw<800) begin	// "sd_ack" low denotes a sector has transferred.
-						sd_lba <= sd_lba + 1;
-						sd_rd <= 1'b1;
-						audio_state <= 1;	// Loop back!
-					end
-				end
-				endcase
-			end
-			else begin
-				cdda_play <= 1'b0;
-			end
-
+			
 			
 			if (SCSI_SEL && phase==PHASE_DATA_IN) begin
 				cdc_databus <= data_buffer_dout;		// Continually output new data from the buffer.
@@ -1220,8 +1203,8 @@ always_ff @(posedge CLOCK) begin
 					end
 					else begin						// Else, done!
 						data_buffer_pos <= 0;
-						bram_lock[6] <= 1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
-						bram_lock[5] <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
+						READY_FLAG <=1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
+						DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 						phase <= PHASE_STATUS;
 					end
 				end
@@ -1262,6 +1245,15 @@ always_ff @(posedge CLOCK) begin
 		end // end if sel - and our main logic
 	end // end else main
 end // end always
+
+
+
+function  bcd2dec;
+input [7:0] bcd;
+begin
+	bcd2dec = (bcd[7:4]*10) + bcd[3:0];
+end
+endfunction
 
 
 endmodule
